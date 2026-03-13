@@ -3,6 +3,9 @@
     "name": "attendanceSalaryApp",
     "slug": "attendanceSalaryApp",
     "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -18,6 +21,8 @@
       }
     },
     "android": {
+      "package": "com.khushal.attendancesalaryapp",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",

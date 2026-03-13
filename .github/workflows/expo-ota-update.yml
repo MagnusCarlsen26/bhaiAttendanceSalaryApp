@@ -1,0 +1,78 @@
+name: Expo OTA Update
+
+on:
+  push:
+    branches:
+      - main
+      - stage
+    paths:
+      - App.js
+      - index.js
+      - app.json
+      - package.json
+      - package-lock.json
+      - assets/**
+      - src/**
+  workflow_dispatch:
+
+jobs:
+  publish-ota-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - name: Check Expo token
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "EXPO_TOKEN is not configured."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate Expo configuration
+        run: npm run expo:doctor
+
+      - name: Select OTA branch
+        id: target
+        run: |
+          branch="${GITHUB_REF_NAME}"
+          if [ "$branch" = "main" ]; then
+            echo "update_branch=production" >> "$GITHUB_OUTPUT"
+          elif [ "$branch" = "stage" ]; then
+            echo "update_branch=preview" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unsupported branch: $branch"
+            exit 1
+          fi
+
+      - name: Publish OTA update
+        env:
+          EAS_UPDATE_MESSAGE: "${{ github.ref_name }}: ${{ github.sha }}"
+        run: |
+          update_branch="${{ steps.target.outputs.update_branch }}"
+          if [ "$update_branch" = "production" ]; then
+            npm run update:production
+          else
+            npm run update:preview
+          fi
+
+      - name: Add OTA summary
+        run: |
+          echo "## Expo OTA update" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Git branch: $GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "- EAS update branch: ${{ steps.target.outputs.update_branch }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Message: ${{ github.ref_name }}: ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"

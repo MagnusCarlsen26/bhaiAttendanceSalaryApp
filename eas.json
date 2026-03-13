@@ -1,0 +1,26 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "production-apk": {
+      "channel": "production",
+      "distribution": "internal",
+      "node": "20.19.0",
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "preview-apk": {
+      "channel": "preview",
+      "distribution": "internal",
+      "node": "20.19.0",
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      }
+    }
+  }
+}

@@ -6,7 +6,12 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "expo:doctor": "npx expo-doctor",
+    "build:android:production": "npx eas-cli@latest build --platform android --profile production-apk --non-interactive --wait --json",
+    "build:android:preview": "npx eas-cli@latest build --platform android --profile preview-apk --non-interactive --wait --json",
+    "update:production": "node scripts/run-eas-update.js production",
+    "update:preview": "node scripts/run-eas-update.js preview"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
