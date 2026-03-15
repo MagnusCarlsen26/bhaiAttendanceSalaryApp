@@ -419,9 +419,9 @@ export const AttendanceProvider = ({ children }) => {
     const hourlyRate = computeHourlyRate(employee);
     const bonus = extraHours > 0 ? extraHours * hourlyRate : 0;
     const less = extraHours < 0 ? Math.abs(extraHours) * hourlyRate : 0;
-    const earnedBase =
-      summary.workingDays > 0 ? (employee.monthlySalary * summary.presentDays) / summary.workingDays : 0;
-    const absentDeduction = Math.max(employee.monthlySalary - earnedBase, 0);
+    const perDaySalary = (Number(employee.monthlySalary) || 0) / 30;
+    const earnedBase = Math.min(summary.presentDays * perDaySalary, Number(employee.monthlySalary) || 0);
+    const absentDeduction = Math.max((Number(employee.monthlySalary) || 0) - earnedBase, 0);
     const net = Math.max(earnedBase + bonus - less, 0);
     return {
       employee,

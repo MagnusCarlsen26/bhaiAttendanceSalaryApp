@@ -75,15 +75,12 @@ export const computeHourlyRate = (employee) => {
   if (!employee) {
     return 0;
   }
-  const { expectedHoursPerDay, workingDaysPerWeek } = employee;
-  if (!expectedHoursPerDay || !workingDaysPerWeek) {
+  const { expectedHoursPerDay } = employee;
+  if (!expectedHoursPerDay) {
     return 0;
   }
-  const monthlyWorkingHours = expectedHoursPerDay * workingDaysPerWeek * 4.33;
-  if (monthlyWorkingHours === 0) {
-    return 0;
-  }
-  return employee.monthlySalary / monthlyWorkingHours;
+  const dailySalary = (Number(employee.monthlySalary) || 0) / 30;
+  return dailySalary / expectedHoursPerDay;
 };
 
 export const roundToHalfHour = (value) => Math.round(value * 2) / 2;

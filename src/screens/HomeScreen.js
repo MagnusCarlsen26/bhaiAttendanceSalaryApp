@@ -34,31 +34,16 @@ const getTone = (record) => {
   return 'neutral';
 };
 
-const rowToneStyles = {
-  neutral: {
-    backgroundColor: '#f8efe2',
-    borderColor: '#d9c4ad',
-  },
+const statusPalette = {
   present: {
-    backgroundColor: '#dff0e2',
-    borderColor: '#5f8a69',
+    activeBackground: colors.present,
+    activeBorder: colors.presentBorder,
+    activeText: colors.white,
   },
   absent: {
-    backgroundColor: '#f5ddda',
-    borderColor: '#ad6154',
-  },
-};
-
-const statusButtonStyles = {
-  present: {
-    backgroundColor: '#cfe4d4',
-    borderColor: '#7aa188',
-    color: '#173a27',
-  },
-  absent: {
-    backgroundColor: '#edd1cb',
-    borderColor: '#ba7668',
-    color: '#5e251f',
+    activeBackground: colors.absent,
+    activeBorder: colors.absentBorder,
+    activeText: colors.white,
   },
 };
 
@@ -235,7 +220,7 @@ const HomeScreen = () => {
 
   const renderStatusButton = (employeeId, record, status, label) => {
     const isActive = (status === 'present' && record.present) || (status === 'absent' && record.markedAbsent);
-    const palette = statusButtonStyles[status];
+    const palette = statusPalette[status];
 
     return (
       <Pressable
@@ -244,18 +229,16 @@ const HomeScreen = () => {
           styles.statusButton,
           status === 'absent' && styles.statusButtonGap,
           {
-            backgroundColor: palette.backgroundColor,
-            borderColor: palette.borderColor,
+            backgroundColor: isActive ? palette.activeBackground : colors.surface,
+            borderColor: isActive ? palette.activeBorder : colors.border,
           },
-          isActive && styles.statusButtonActive,
           pressed && styles.pressed,
         ]}
       >
         <Text
           style={[
             styles.statusButtonText,
-            { color: palette.color },
-            isActive && styles.statusButtonTextActive,
+            { color: isActive ? palette.activeText : colors.text },
           ]}
         >
           {label}
@@ -275,7 +258,7 @@ const HomeScreen = () => {
     };
 
     return (
-      <SectionCard dense themed style={[styles.employeeCard, rowToneStyles[tone]]}>
+      <View style={styles.employeeCard}>
         <View style={styles.employeeRow}>
           <View style={styles.employeeMeta}>
             <View style={styles.employeeTextWrap}>
@@ -308,7 +291,7 @@ const HomeScreen = () => {
             )}
           </Pressable>
         </View>
-      </SectionCard>
+      </View>
     );
   };
 
@@ -371,7 +354,7 @@ const HomeScreen = () => {
         onScroll={handleScroll}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
+        ItemSeparatorComponent={() => <View style={styles.rowDivider} />}
         ListHeaderComponent={
           <View style={styles.listHeader}>
             <SectionCard tinted dense themed style={styles.summaryCard}>
@@ -615,14 +598,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 12,
   },
-  separator: {
-    height: 6,
+  rowDivider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginVertical: 6,
   },
   employeeCard: {
     paddingVertical: 10,
-    borderWidth: 1.5,
-    borderTopWidth: 0,
-    borderBottomWidth: 0,
+    paddingHorizontal: 0,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
   },
   employeeRow: {
     flexDirection: 'row',
@@ -677,31 +662,23 @@ const styles = StyleSheet.create({
   },
   statusRow: {
     flexDirection: 'row',
-    width: 158,
-    flexShrink: 0,
+    alignItems: 'center',
     marginLeft: 8,
   },
   statusButton: {
-    flex: 1,
-    minHeight: 34,
-    borderRadius: radius.sm,
+    width: 44,
+    height: 44,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
   },
   statusButtonGap: {
-    marginLeft: 6,
-  },
-  statusButtonActive: {
-    backgroundColor: colors.accentStrong,
-    borderColor: colors.accentStrong,
+    marginLeft: 10,
   },
   statusButtonText: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '800',
-  },
-  statusButtonTextActive: {
-    color: colors.white,
   },
   footerSpace: {
     height: 44,
