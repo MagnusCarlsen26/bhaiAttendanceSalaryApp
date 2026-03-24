@@ -12,17 +12,19 @@ let storageWarningShown = false;
 
 const defaultRecord = { present: false, extraHours: 0, arrivalTime: null, needsReconfirm: false, markedAbsent: false };
 const TEST_EMPLOYEE_PREFIX = 'test-emp-';
+const VALID_PAYMENT_FREQUENCIES = ['weekly', 'fortnightly', 'monthly'];
+const normalizePaymentFrequency = (value) => (VALID_PAYMENT_FREQUENCIES.includes(value) ? value : 'monthly');
 const TEST_EMPLOYEE_CONFIGS = [
-  { name: 'Aarav', expectedHoursPerDay: 8, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 28000 },
-  { name: 'Vivaan', expectedHoursPerDay: 9, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 32000 },
-  { name: 'Aditya', expectedHoursPerDay: 8, workingDaysPerWeek: 5, nonWorkingDays: ['Saturday', 'Sunday'], monthlySalary: 30000 },
-  { name: 'Vihaan', expectedHoursPerDay: 10, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 36000 },
-  { name: 'Arjun', expectedHoursPerDay: 8, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 29000 },
-  { name: 'Sai', expectedHoursPerDay: 7, workingDaysPerWeek: 5, nonWorkingDays: ['Saturday', 'Sunday'], monthlySalary: 25000 },
-  { name: 'Reyansh', expectedHoursPerDay: 9, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 34000 },
-  { name: 'Krishna', expectedHoursPerDay: 8, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 31000 },
-  { name: 'Ishaan', expectedHoursPerDay: 8, workingDaysPerWeek: 5, nonWorkingDays: ['Saturday', 'Sunday'], monthlySalary: 27000 },
-  { name: 'Kabir', expectedHoursPerDay: 9, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 33000 },
+  { name: 'Aarav', expectedHoursPerDay: 8, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 28000, paymentFrequency: 'monthly' },
+  { name: 'Vivaan', expectedHoursPerDay: 9, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 32000, paymentFrequency: 'monthly' },
+  { name: 'Aditya', expectedHoursPerDay: 8, workingDaysPerWeek: 5, nonWorkingDays: ['Saturday', 'Sunday'], monthlySalary: 30000, paymentFrequency: 'monthly' },
+  { name: 'Vihaan', expectedHoursPerDay: 10, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 36000, paymentFrequency: 'monthly' },
+  { name: 'Arjun', expectedHoursPerDay: 8, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 29000, paymentFrequency: 'monthly' },
+  { name: 'Sai', expectedHoursPerDay: 7, workingDaysPerWeek: 5, nonWorkingDays: ['Saturday', 'Sunday'], monthlySalary: 25000, paymentFrequency: 'monthly' },
+  { name: 'Reyansh', expectedHoursPerDay: 9, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 34000, paymentFrequency: 'monthly' },
+  { name: 'Krishna', expectedHoursPerDay: 8, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 31000, paymentFrequency: 'monthly' },
+  { name: 'Ishaan', expectedHoursPerDay: 8, workingDaysPerWeek: 5, nonWorkingDays: ['Saturday', 'Sunday'], monthlySalary: 27000, paymentFrequency: 'monthly' },
+  { name: 'Kabir', expectedHoursPerDay: 9, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 33000, paymentFrequency: 'monthly' },
 ];
 
 const AttendanceContext = createContext({});
@@ -30,6 +32,10 @@ const AttendanceContext = createContext({});
 const generateId = () => `emp-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 const sortEmployeesByName = (list) =>
   [...list].sort((a, b) => (a?.name || '').localeCompare(b?.name || '', undefined, { sensitivity: 'base' }));
+const normalizeEmployee = (employee) => ({
+  ...employee,
+  paymentFrequency: normalizePaymentFrequency(employee?.paymentFrequency),
+});
 const getAdjustedHoursFromArrival = (employee, arrivalTime) => {
   if (!employee?.shiftStart || !arrivalTime) {
     return 0;
@@ -97,7 +103,7 @@ export const AttendanceProvider = ({ children }) => {
         readPersistedItem(RECORD_KEY),
         readPersistedItem(PAYOUT_KEY),
       ]);
-      setEmployees(storedEmployees ? sortEmployeesByName(JSON.parse(storedEmployees)) : []);
+      setEmployees(storedEmployees ? sortEmployeesByName(JSON.parse(storedEmployees).map(normalizeEmployee)) : []);
       setAttendanceRecords(storedRecords ? JSON.parse(storedRecords) : {});
       setPayoutRecords(storedPayouts ? JSON.parse(storedPayouts) : {});
     } catch (error) {
@@ -150,14 +156,16 @@ export const AttendanceProvider = ({ children }) => {
   const addEmployee = (employeeData) => {
     const newEmployee = {
       id: generateId(),
-      ...employeeData,
+      ...normalizeEmployee(employeeData),
     };
     updateEmployees((prev) => [...prev, newEmployee]);
   };
 
   const updateEmployee = (employeeId, employeeData) => {
     updateEmployees((prev) =>
-      prev.map((employee) => (employee.id === employeeId ? { ...employee, ...employeeData, id: employee.id } : employee))
+      prev.map((employee) =>
+        employee.id === employeeId ? normalizeEmployee({ ...employee, ...employeeData, id: employee.id }) : employee
+      )
     );
   };
 

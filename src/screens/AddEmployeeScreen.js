@@ -21,6 +21,11 @@ import { colors, radius, type } from '../theme/tokens';
 const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const DEFAULT_SHIFT_START = '09:00';
 const DEFAULT_SHIFT_END = '18:00';
+const PAYMENT_FREQUENCY_OPTIONS = [
+  { label: 'Weekly', value: 'weekly' },
+  { label: 'Fortnightly', value: 'fortnightly' },
+  { label: 'Monthly', value: 'monthly' },
+];
 
 const getDefaultNonWorkingDays = (workingDaysPerWeek) => {
   const normalizedWorkingDays = Number.isFinite(workingDaysPerWeek)
@@ -59,6 +64,7 @@ const AddEmployeeScreen = ({ navigation, route }) => {
   const [expectedHours, setExpectedHours] = useState('');
   const [workingDays, setWorkingDays] = useState('');
   const [monthlySalary, setMonthlySalary] = useState('');
+  const [paymentFrequency, setPaymentFrequency] = useState('monthly');
   const [nonWorkingDays, setNonWorkingDays] = useState([]);
   const [shiftStart, setShiftStart] = useState(null);
   const [shiftEnd, setShiftEnd] = useState(null);
@@ -70,6 +76,7 @@ const AddEmployeeScreen = ({ navigation, route }) => {
       setExpectedHours('');
       setWorkingDays('');
       setMonthlySalary('');
+      setPaymentFrequency('monthly');
       setNonWorkingDays([]);
       setShiftStart(null);
       setShiftEnd(null);
@@ -80,6 +87,7 @@ const AddEmployeeScreen = ({ navigation, route }) => {
     setExpectedHours(String(employeeToEdit.expectedHoursPerDay ?? ''));
     setWorkingDays(String(employeeToEdit.workingDaysPerWeek ?? ''));
     setMonthlySalary(String(employeeToEdit.monthlySalary ?? ''));
+    setPaymentFrequency(employeeToEdit.paymentFrequency || 'monthly');
     const fallbackNonWorkingDays = getDefaultNonWorkingDays(employeeToEdit.workingDaysPerWeek);
 
     setNonWorkingDays(
@@ -188,6 +196,7 @@ const AddEmployeeScreen = ({ navigation, route }) => {
     const resolvedExpectedHours = expectedHours.trim() || String(employeeToEdit?.expectedHoursPerDay ?? '');
     const resolvedWorkingDays = workingDays.trim() || String(employeeToEdit?.workingDaysPerWeek ?? '');
     const resolvedMonthlySalary = monthlySalary.trim() || String(employeeToEdit?.monthlySalary ?? '');
+    const resolvedPaymentFrequency = paymentFrequency || employeeToEdit?.paymentFrequency || 'monthly';
     const resolvedWorkingDaysPerWeek = clampWorkingDays(resolvedWorkingDays);
     const resolvedNonWorkingDayCount =
       resolvedWorkingDaysPerWeek > 0 && resolvedWorkingDaysPerWeek < 7 ? 7 - resolvedWorkingDaysPerWeek : 0;
@@ -229,6 +238,7 @@ const AddEmployeeScreen = ({ navigation, route }) => {
       shiftStart: resolvedShiftStart.format('HH:mm'),
       shiftEnd: resolvedShiftEnd.format('HH:mm'),
       monthlySalary: Number(resolvedMonthlySalary),
+      paymentFrequency: resolvedPaymentFrequency,
     };
 
     if (isEditMode) {
@@ -322,6 +332,27 @@ const AddEmployeeScreen = ({ navigation, route }) => {
             placeholder="50000"
             keyboardType="numeric"
           />
+          <View style={styles.fieldSpacing}>
+            <Text style={styles.fieldLabel}>Payment frequency</Text>
+            <View style={styles.frequencyWrap}>
+              {PAYMENT_FREQUENCY_OPTIONS.map((option) => {
+                const selected = paymentFrequency === option.value;
+                return (
+                  <Pressable
+                    key={option.value}
+                    onPress={() => setPaymentFrequency(option.value)}
+                    style={({ pressed }) => [
+                      styles.frequencyChip,
+                      selected && styles.frequencyChipSelected,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={[styles.frequencyText, selected && styles.frequencyTextSelected]}>{option.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
         </SectionCard>
 
         <PrimaryButton
@@ -429,6 +460,33 @@ const styles = StyleSheet.create({
     marginTop: 4,
     color: colors.textMuted,
     fontSize: 13,
+  },
+  frequencyWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  frequencyChip: {
+    minHeight: 44,
+    paddingHorizontal: 14,
+    borderRadius: radius.pill,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  frequencyChipSelected: {
+    backgroundColor: colors.accentStrong,
+    borderColor: colors.accentStrong,
+  },
+  frequencyText: {
+    color: colors.text,
+    fontWeight: '700',
+  },
+  frequencyTextSelected: {
+    color: colors.white,
   },
   timeRow: {
     flexDirection: 'row',
