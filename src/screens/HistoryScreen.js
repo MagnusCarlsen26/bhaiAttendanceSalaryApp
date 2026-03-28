@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import dayjs from 'dayjs';
 import { useNavigation } from '@react-navigation/native';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { useAttendance } from '../context/AttendanceContext';
 import { formatDate } from '../utils/dateUtils';
 import { formatHours } from '../utils/formatters';
@@ -16,7 +18,38 @@ const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const formatCalendarHours = (value) => formatHours(value).replace(/h$/, '');
 
-const buildMonthCells = (employee, monthStart, monthEnd, getRecord) => {
+const BulkPresentIcon = ({ color = colors.accentStrong }) => (
+  <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M7 5.5H17C18.3807 5.5 19.5 6.61929 19.5 8V17C19.5 18.3807 18.3807 19.5 17 19.5H7C5.61929 19.5 4.5 18.3807 4.5 17V8C4.5 6.61929 5.61929 5.5 7 5.5Z"
+      stroke={color}
+      strokeWidth="1.8"
+    />
+    <Path d="M8 3.75V7.25" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+    <Path d="M16 3.75V7.25" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+    <Path d="M7 10H17" stroke={color} strokeWidth="1.8" strokeLinecap="round" />
+    <Path d="M9 14L11 16L15.5 11.5" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
+
+const ClockIcon = ({ color = colors.white }) => (
+  <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+    <Circle cx="12" cy="12" r="8.5" stroke={color} strokeWidth="2" />
+    <Path d="M12 7.5V12L15 13.75" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </Svg>
+);
+
+const getPaymentMarkerTone = (statusKey) => {
+  if (statusKey === 'paid') {
+    return 'paid';
+  }
+  if (statusKey === 'partial') {
+    return 'partial';
+  }
+  return 'due';
+};
+
+const buildMonthCells = (employee, monthStart, monthEnd, getRecord, paymentMarkers = {}) => {
   const calendarStart = monthStart.startOf('week');
   const calendarEnd = monthEnd.endOf('week');
   const weeks = [];
@@ -41,6 +74,7 @@ const buildMonthCells = (employee, monthStart, monthEnd, getRecord) => {
     }
 
     const record = getRecord(dateKey, employee.id);
+    const paymentMarker = paymentMarkers[dateKey] || null;
     const hasMarkedState = record.present || record.markedAbsent || record.extraHours !== 0;
 
     if (!hasMarkedState) {
@@ -48,6 +82,7 @@ const buildMonthCells = (employee, monthStart, monthEnd, getRecord) => {
         key: dateKey,
         kind: 'idle',
         dayNumber: cursor.date(),
+        paymentMarker,
       });
       if (currentWeek.length === 7) {
         weeks.push(currentWeek);
@@ -66,6 +101,7 @@ const buildMonthCells = (employee, monthStart, monthEnd, getRecord) => {
       label: hasHours ? formatCalendarHours(record.extraHours) : isPresent ? 'P' : 'A',
       isNegativeHours: hasHours && record.extraHours < 0,
       isPositiveHours: hasHours && record.extraHours > 0,
+      paymentMarker,
     });
     if (currentWeek.length === 7) {
       weeks.push(currentWeek);
@@ -86,10 +122,24 @@ const buildMonthCells = (employee, monthStart, monthEnd, getRecord) => {
 
 const HistoryScreen = () => {
   const navigation = useNavigation();
-  const { employees, getSummaryForEmployee, getRecord, refreshData, getEmployeePaymentStatusForMonth } = useAttendance();
+  const {
+    employees,
+    getSummaryForEmployee,
+    getRecord,
+    refreshData,
+    getEmployeePaymentStatusForMonth,
+    getPayCyclesForEmployee,
+    setPresenceStatus,
+    setArrivalTime,
+  } =
+    useAttendance();
   const [refreshing, setRefreshing] = useState(false);
   const [expandedEmployees, setExpandedEmployees] = useState({});
   const [monthPickerConfig, setMonthPickerConfig] = useState(null);
+  const [bulkPresentEmployeeId, setBulkPresentEmployeeId] = useState(null);
+  const [bulkConfirmEmployee, setBulkConfirmEmployee] = useState(null);
+  const [bulkArrivalPickerConfig, setBulkArrivalPickerConfig] = useState(null);
+  const [bulkEditingDate, setBulkEditingDate] = useState(null);
   const currentMonth = useMemo(() => dayjs().startOf('month'), []);
   const [selectedMonth, setSelectedMonth] = useState(currentMonth.format('YYYY-MM-DD'));
 
@@ -118,6 +168,79 @@ const HistoryScreen = () => {
     }
     changeSelectedMonth(dayjs().year(config.year).month(monthIndex).startOf('month'));
     setMonthPickerConfig(null);
+  };
+
+  const closeBulkMode = () => {
+    setBulkPresentEmployeeId(null);
+    setBulkConfirmEmployee(null);
+    setBulkArrivalPickerConfig(null);
+    setBulkEditingDate(null);
+  };
+
+  const openBulkConfirm = (employee) => {
+    setBulkConfirmEmployee(employee);
+  };
+
+  const confirmBulkMode = () => {
+    if (!bulkConfirmEmployee) {
+      return;
+    }
+
+    setExpandedEmployees((prev) => ({
+      ...prev,
+      [bulkConfirmEmployee.id]: true,
+    }));
+    setBulkPresentEmployeeId(bulkConfirmEmployee.id);
+    setBulkConfirmEmployee(null);
+  };
+
+  const toggleHistoryPresence = (employeeId, dateKey) => {
+    const record = getRecord(dateKey, employeeId);
+    const hasMarkedState = record.present || record.markedAbsent || record.extraHours !== 0;
+    const nextStatus = !hasMarkedState || record.markedAbsent || !record.present ? 'present' : 'absent';
+    setPresenceStatus(employeeId, nextStatus, dateKey);
+  };
+
+  const openBulkArrivalPicker = (employee, dateKey) => {
+    const record = getRecord(dateKey, employee.id);
+    setBulkEditingDate(dateKey);
+    setBulkPresentEmployeeId(employee.id);
+    setBulkArrivalPickerConfig({
+      employeeId: employee.id,
+      value: dayjs(`2000-01-01 ${record.arrivalTime || employee.shiftStart || '09:00'}`).toDate(),
+    });
+  };
+
+  const commitBulkArrivalPickerValue = (config, value) => {
+    if (!config || !bulkEditingDate) {
+      setBulkArrivalPickerConfig(null);
+      setBulkEditingDate(null);
+      return;
+    }
+
+    setArrivalTime(config.employeeId, dayjs(value || config.value).format('HH:mm'), bulkEditingDate);
+    setBulkArrivalPickerConfig(null);
+    setBulkEditingDate(null);
+  };
+
+  const handleBulkArrivalTimeChange = (event, nextValue) => {
+    if (!bulkArrivalPickerConfig) {
+      return;
+    }
+
+    if (event?.type === 'dismissed') {
+      setBulkArrivalPickerConfig(null);
+      setBulkEditingDate(null);
+      return;
+    }
+
+    const resolvedValue = nextValue || bulkArrivalPickerConfig.value;
+    if (Platform.OS === 'android') {
+      commitBulkArrivalPickerValue(bulkArrivalPickerConfig, resolvedValue);
+      return;
+    }
+
+    setBulkArrivalPickerConfig((prev) => (prev ? { ...prev, value: resolvedValue } : prev));
   };
 
   useEffect(() => {
@@ -162,17 +285,26 @@ const HistoryScreen = () => {
         .map((employee) => {
           const summary = getSummaryForEmployee(employee.id, monthStart, monthEnd);
           const attendanceRate = summary.workingDays > 0 ? Math.round((summary.presentDays / summary.workingDays) * 100) : 0;
+          const paymentMarkers = getPayCyclesForEmployee(employee.id, selectedMonthDate).reduce((markers, cycle) => {
+            const dateKey = formatDate(cycle.dueDate);
+            markers[dateKey] = {
+              icon: '💰',
+              tone: getPaymentMarkerTone(cycle.status.key),
+              label: cycle.status.label,
+            };
+            return markers;
+          }, {});
 
           return {
             employee,
             summary,
             attendanceRate,
-            cells: buildMonthCells(employee, monthStart, monthEnd, getRecord),
+            cells: buildMonthCells(employee, monthStart, monthEnd, getRecord, paymentMarkers),
             paymentStatus: getEmployeePaymentStatusForMonth(employee.id, selectedMonthDate),
           };
         })
         .sort((a, b) => a.employee.name.localeCompare(b.employee.name)),
-    [employees, getEmployeePaymentStatusForMonth, getRecord, getSummaryForEmployee, monthEnd, monthStart, selectedMonthDate]
+    [employees, getEmployeePaymentStatusForMonth, getPayCyclesForEmployee, getRecord, getSummaryForEmployee, monthEnd, monthStart, selectedMonthDate]
   );
 
   const handleRefresh = async () => {
@@ -185,6 +317,10 @@ const HistoryScreen = () => {
   };
 
   const toggleExpandedEmployee = (employeeId) => {
+    if (bulkPresentEmployeeId === employeeId && expandedEmployees[employeeId]) {
+      closeBulkMode();
+    }
+
     setExpandedEmployees((prev) => ({
       ...prev,
       [employeeId]: !prev[employeeId],
@@ -202,15 +338,48 @@ const HistoryScreen = () => {
           <EmptyState title="No history found" subtitle="Add employees to unlock the monthly history view." />
         ) : null}
 
-        {employeeCards.map(({ employee, summary, attendanceRate, cells, paymentStatus }) => (
-          <SectionCard key={employee.id} dense themed style={styles.employeeCard}>
+        {employeeCards.map(({ employee, summary, attendanceRate, cells, paymentStatus }) => {
+          const isBulkActive = bulkPresentEmployeeId === employee.id;
+          const isAnotherEmployeeActive = bulkPresentEmployeeId && !isBulkActive;
+          return (
+            <SectionCard
+              key={employee.id}
+              dense
+              themed
+              style={[styles.employeeCard, isBulkActive && styles.employeeCardActive, isAnotherEmployeeActive && styles.employeeCardMuted]}
+            >
             <Pressable onPress={() => toggleExpandedEmployee(employee.id)} style={({ pressed }) => [styles.employeeHeader, pressed && styles.pressed]}>
               <View style={styles.employeeHeaderText}>
                 <View style={styles.employeeMainMeta}>
                   <View style={styles.employeeNameContainer}>
-                    <Text numberOfLines={1} style={styles.employeeName}>
-                      {employee.name}
-                    </Text>
+                    <View style={styles.employeeNameRow}>
+                      <Text numberOfLines={1} style={styles.employeeName}>
+                        {employee.name}
+                      </Text>
+                      <Pressable
+                        onPress={(event) => {
+                          event.stopPropagation?.();
+                          openBulkConfirm(employee);
+                        }}
+                        onPressIn={(event) => event.stopPropagation?.()}
+                        style={({ pressed }) => [
+                          styles.bulkActionButton,
+                          isBulkActive && styles.bulkActionButtonActive,
+                          pressed && styles.pressed,
+                        ]}
+                        hitSlop={8}
+                      >
+                        <BulkPresentIcon color={isBulkActive ? colors.white : colors.accentStrong} />
+                      </Pressable>
+                    </View>
+                    {isBulkActive ? (
+                      <View style={styles.bulkModeBanner}>
+                        <Text style={styles.bulkModeBannerText}>Bulk mode on</Text>
+                        <Pressable onPress={closeBulkMode} style={({ pressed }) => [styles.bulkDoneButton, pressed && styles.pressed]}>
+                          <Text style={styles.bulkDoneButtonText}>Done</Text>
+                        </Pressable>
+                      </View>
+                    ) : null}
                   </View>
                   <View style={styles.employeePaymentRow}>
                     <Text numberOfLines={1} style={styles.employeePaymentMeta}>
@@ -255,6 +424,7 @@ const HistoryScreen = () => {
                   {cells.map((cell) => {
                     const isMarked = cell.kind === 'present' || cell.kind === 'absent';
                     const shouldShowDayNumber = cell.kind === 'idle' || isMarked;
+                    const isInteractive = isBulkActive && cell.kind !== 'filler' && cell.kind !== 'nonWorking';
                     return (
                       <View
                         key={cell.key}
@@ -265,30 +435,65 @@ const HistoryScreen = () => {
                         ]}
                       >
                         {cell.kind !== 'filler' && cell.kind !== 'nonWorking' ? (
-                          <View
-                            style={[
+                          <Pressable
+                            disabled={!isInteractive}
+                            delayLongPress={250}
+                            onPress={() => toggleHistoryPresence(employee.id, cell.key)}
+                            onLongPress={() => openBulkArrivalPicker(employee, cell.key)}
+                            style={({ pressed }) => [
                               styles.cell,
                               cell.kind === 'present' && styles.presentCell,
                               cell.kind === 'absent' && styles.absentCell,
+                              isInteractive && styles.cellInteractive,
+                              isBulkActive && styles.cellEditable,
+                              isAnotherEmployeeActive && styles.cellDimmed,
+                              pressed && isInteractive && styles.cellPressed,
                             ]}
                           >
                             {shouldShowDayNumber ? (
                               <Text style={[styles.dayNumber, isMarked && styles.markedDayNumber]}>{cell.dayNumber}</Text>
                             ) : null}
                             {cell.label ? (
+                              <View style={styles.cellMetaRow}>
+                                <Text
+                                  numberOfLines={1}
+                                  style={[
+                                    styles.cellLabel,
+                                    isMarked && styles.markedCellLabel,
+                                    cell.isPositiveHours && styles.positiveHoursLabel,
+                                    cell.isNegativeHours && styles.negativeHoursLabel,
+                                  ]}
+                                >
+                                  {cell.label}
+                                </Text>
+                                {cell.paymentMarker ? (
+                                  <Text
+                                    accessibilityLabel={`Payment ${cell.paymentMarker.label}`}
+                                    style={[
+                                      styles.paymentMarker,
+                                      cell.paymentMarker.tone === 'paid' && styles.paymentMarkerPaid,
+                                      cell.paymentMarker.tone === 'partial' && styles.paymentMarkerPartial,
+                                    ]}
+                                  >
+                                    {cell.paymentMarker.icon}
+                                  </Text>
+                                ) : null}
+                              </View>
+                            ) : null}
+                            {!cell.label && cell.paymentMarker ? (
                               <Text
-                                numberOfLines={1}
+                                accessibilityLabel={`Payment ${cell.paymentMarker.label}`}
                                 style={[
-                                  styles.cellLabel,
-                                  isMarked && styles.markedCellLabel,
-                                  cell.isPositiveHours && styles.positiveHoursLabel,
-                                  cell.isNegativeHours && styles.negativeHoursLabel,
+                                  styles.paymentMarker,
+                                  styles.paymentMarkerStandalone,
+                                  cell.paymentMarker.tone === 'paid' && styles.paymentMarkerPaid,
+                                  cell.paymentMarker.tone === 'partial' && styles.paymentMarkerPartial,
                                 ]}
                               >
-                                {cell.label}
+                                {cell.paymentMarker.icon}
                               </Text>
                             ) : null}
-                          </View>
+                          </Pressable>
                         ) : (
                           <>
                             {cell.kind === 'nonWorking' ? <View style={styles.blankCell} /> : null}
@@ -311,9 +516,34 @@ const HistoryScreen = () => {
                 </View>
               </>
             ) : null}
-          </SectionCard>
-        ))}
+            </SectionCard>
+          );
+        })}
       </ScrollView>
+
+      {bulkConfirmEmployee ? (
+        <Modal visible transparent animationType="slide" onRequestClose={() => setBulkConfirmEmployee(null)}>
+          <Pressable style={styles.modalOverlay} onPress={() => setBulkConfirmEmployee(null)}>
+            <Pressable style={styles.modalSheet} onPress={() => {}}>
+              <View style={styles.bulkConfirmIconWrap}>
+                <BulkPresentIcon color={colors.accentStrong} />
+              </View>
+              <Text style={styles.bulkConfirmTitle}>Start bulk present?</Text>
+              <Text style={styles.bulkConfirmBody}>
+                Edit {bulkConfirmEmployee.name}&apos;s attendance for {headerMonthLabel}. Long-press any date to set arrival time.
+              </Text>
+              <View style={styles.bulkConfirmActions}>
+                <Pressable onPress={() => setBulkConfirmEmployee(null)} style={({ pressed }) => [styles.bulkConfirmSecondary, pressed && styles.pressed]}>
+                  <Text style={styles.bulkConfirmSecondaryText}>Cancel</Text>
+                </Pressable>
+                <Pressable onPress={confirmBulkMode} style={({ pressed }) => [styles.bulkConfirmPrimary, pressed && styles.pressed]}>
+                  <Text style={styles.bulkConfirmPrimaryText}>Start</Text>
+                </Pressable>
+              </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      ) : null}
 
       {monthPickerConfig ? (
         <Modal visible transparent animationType="slide" onRequestClose={() => setMonthPickerConfig(null)}>
@@ -390,6 +620,55 @@ const HistoryScreen = () => {
           </Pressable>
         </Modal>
       ) : null}
+
+      {bulkArrivalPickerConfig && Platform.OS === 'android' ? (
+        <DateTimePicker
+          value={bulkArrivalPickerConfig.value}
+          mode="time"
+          display="clock"
+          is24Hour={false}
+          onChange={handleBulkArrivalTimeChange}
+        />
+      ) : null}
+
+      {bulkArrivalPickerConfig && Platform.OS === 'ios' ? (
+        <Modal visible transparent animationType="slide" onRequestClose={() => setBulkArrivalPickerConfig(null)}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalSheet}>
+              <View style={styles.timePickerHeading}>
+                <View style={styles.timePickerBadge}>
+                  <ClockIcon color={colors.accentStrong} />
+                </View>
+                <Text style={styles.timePickerTitle}>Set arrival time</Text>
+              </View>
+              <DateTimePicker
+                value={bulkArrivalPickerConfig.value}
+                mode="time"
+                display="spinner"
+                is24Hour={false}
+                onChange={handleBulkArrivalTimeChange}
+              />
+              <View style={styles.modalActions}>
+                <Pressable
+                  onPress={() => {
+                    setBulkArrivalPickerConfig(null);
+                    setBulkEditingDate(null);
+                  }}
+                  style={styles.modalAction}
+                >
+                  <Text style={styles.modalActionText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => commitBulkArrivalPickerValue(bulkArrivalPickerConfig, bulkArrivalPickerConfig?.value)}
+                  style={styles.modalAction}
+                >
+                  <Text style={styles.modalActionText}>Done</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
     </Screen>
   );
 };
@@ -433,6 +712,13 @@ const styles = StyleSheet.create({
   employeeCard: {
     marginBottom: 12,
   },
+  employeeCardActive: {
+    borderColor: colors.presentBorder,
+    backgroundColor: '#f1f7f2',
+  },
+  employeeCardMuted: {
+    opacity: 0.72,
+  },
   employeeHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -454,6 +740,10 @@ const styles = StyleSheet.create({
   },
   employeeNameContainer: {
     flex: 1,
+  },
+  employeeNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   employeePaymentRow: {
     marginTop: 8,
@@ -491,6 +781,49 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: colors.text,
     flexShrink: 1,
+  },
+  bulkActionButton: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.pill,
+    marginLeft: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  bulkActionButtonActive: {
+    borderColor: colors.present,
+    backgroundColor: colors.present,
+  },
+  bulkModeBanner: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: colors.presentSoft,
+    borderWidth: 1,
+    borderColor: colors.presentBorder,
+    borderRadius: radius.md,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  bulkModeBannerText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.present,
+  },
+  bulkDoneButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.present,
+  },
+  bulkDoneButtonText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: colors.white,
   },
   employeeMetaInline: {
     fontSize: 12,
@@ -558,6 +891,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 4,
   },
+  cellInteractive: {
+    overflow: 'hidden',
+  },
+  cellEditable: {
+    borderColor: colors.presentBorder,
+  },
+  cellDimmed: {
+    opacity: 0.7,
+  },
+  cellPressed: {
+    transform: [{ scale: 0.97 }],
+  },
   fillerCell: {
     backgroundColor: 'transparent',
   },
@@ -593,6 +938,13 @@ const styles = StyleSheet.create({
   markedCellLabel: {
     color: colors.text,
   },
+  cellMetaRow: {
+    marginTop: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
   positiveHoursLabel: {
     color: colors.white,
     backgroundColor: colors.present,
@@ -602,6 +954,19 @@ const styles = StyleSheet.create({
     color: colors.white,
     backgroundColor: colors.absent,
     fontWeight: '900',
+  },
+  paymentMarker: {
+    fontSize: 12,
+    lineHeight: 14,
+  },
+  paymentMarkerStandalone: {
+    marginTop: 4,
+  },
+  paymentMarkerPaid: {
+    opacity: 0.7,
+  },
+  paymentMarkerPartial: {
+    opacity: 0.9,
   },
   modalOverlay: {
     flex: 1,
@@ -615,6 +980,74 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 14,
     paddingBottom: 28,
+  },
+  bulkConfirmIconWrap: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceWarmStrong,
+    marginBottom: 14,
+  },
+  bulkConfirmTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: colors.accentStrong,
+  },
+  bulkConfirmBody: {
+    marginTop: 8,
+    fontSize: 15,
+    lineHeight: 22,
+    color: colors.textMuted,
+  },
+  bulkConfirmActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 22,
+  },
+  bulkConfirmSecondary: {
+    minHeight: 44,
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+    borderRadius: radius.pill,
+    marginRight: 10,
+  },
+  bulkConfirmSecondaryText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textMuted,
+  },
+  bulkConfirmPrimary: {
+    minHeight: 44,
+    paddingHorizontal: 18,
+    justifyContent: 'center',
+    borderRadius: radius.pill,
+    backgroundColor: colors.accentStrong,
+  },
+  bulkConfirmPrimaryText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: colors.white,
+  },
+  timePickerHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  timePickerBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    marginRight: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceWarmStrong,
+  },
+  timePickerTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: colors.accentStrong,
   },
   monthPickerHeader: {
     flexDirection: 'row',

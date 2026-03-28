@@ -19,7 +19,6 @@ import Screen from '../components/ui/Screen';
 import SectionCard from '../components/ui/SectionCard';
 import EmptyState from '../components/ui/EmptyState';
 import PrimaryButton from '../components/ui/PrimaryButton';
-import MetricPill from '../components/ui/MetricPill';
 import { colors, radius, type } from '../theme/tokens';
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -117,6 +116,10 @@ const SalaryScreen = () => {
       employees
         .flatMap((employee) => getPayCyclesForEmployee(employee.id, selectedMonthDate))
         .sort((a, b) => {
+          const paidDiff = Number(a.status.key === 'paid') - Number(b.status.key === 'paid');
+          if (paidDiff !== 0) {
+            return paidDiff;
+          }
           const dueDiff = a.dueDate.valueOf() - b.dueDate.valueOf();
           if (dueDiff !== 0) {
             return dueDiff;
@@ -218,18 +221,11 @@ const SalaryScreen = () => {
             <View style={styles.rowHeaderText}>
               <Text style={styles.rowName}>{item.employee.name}</Text>
               <Text style={styles.rowSubtext}>
-                {getCycleCompensationLabel(item.employee.paymentFrequency)} due {item.dueDate.format('DD MMM YYYY')}
+                {getCycleCompensationLabel(item.employee.paymentFrequency)}
               </Text>
               <Text style={styles.rowMeta}>{formatCycleRange(item.start, item.end)}</Text>
             </View>
             <View style={styles.rowValueWrap}>
-              <MetricPill
-                label={null}
-                value={`${item.status.icon} ${item.status.label}`}
-                tone={item.status.tone}
-                compact
-                style={styles.statusPill}
-              />
               <Text style={styles.rowValue}>{formatCurrencyNoPaise(item.remainingAmount)}</Text>
             </View>
           </View>
@@ -244,10 +240,6 @@ const SalaryScreen = () => {
             <View style={styles.breakdownRow}>
               <Text style={styles.breakdownLabel}>Cycle period</Text>
               <Text style={styles.breakdownValue}>{formatCycleRange(item.start, item.end)}</Text>
-            </View>
-            <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>Due date</Text>
-              <Text style={styles.breakdownValue}>{item.dueDate.format('DD MMM YYYY')}</Text>
             </View>
             <View style={styles.breakdownRow}>
               <Text style={styles.breakdownLabel}>Present days</Text>
@@ -572,10 +564,7 @@ const styles = StyleSheet.create({
   },
   rowValueWrap: {
     alignItems: 'flex-end',
-    gap: 10,
-  },
-  statusPill: {
-    marginRight: 0,
+    justifyContent: 'center',
   },
   rowValue: {
     fontSize: 18,

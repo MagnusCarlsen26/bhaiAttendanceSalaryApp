@@ -38,6 +38,30 @@ export const getCompensationLabel = (frequency) => (frequency === 'weekly' ? 'We
 
 export const getCycleCompensationLabel = (frequency) => (frequency === 'weekly' ? 'Weekly payout' : 'Monthly payout');
 
+export const getCycleBaseCompensation = (employee) =>
+  employee?.paymentFrequency === 'weekly'
+    ? toNumber(employee?.compensationAmount)
+    : toNumber(employee?.compensationAmount ?? employee?.monthlySalary);
+
+export const getCycleLengthInDays = (startDate, endDate) =>
+  Math.max(dayjs(endDate).startOf('day').diff(dayjs(startDate).startOf('day'), 'day') + 1, 0);
+
+export const getPayrollRatesForCycle = (employee, startDate, endDate) => {
+  const baseCompensation = getCycleBaseCompensation(employee);
+  const cycleDays = getCycleLengthInDays(startDate, endDate);
+  const payableDays = employee?.paymentFrequency === 'weekly' ? cycleDays : 30;
+  const dailyRate = payableDays > 0 ? baseCompensation / payableDays : 0;
+  const expectedHoursPerDay = toNumber(employee?.expectedHoursPerDay);
+  const hourlyRate = expectedHoursPerDay > 0 ? dailyRate / expectedHoursPerDay : 0;
+
+  return {
+    baseCompensation,
+    payableDays,
+    dailyRate,
+    hourlyRate,
+  };
+};
+
 export const getWeekStartMonday = (value) => {
   const date = dayjs(value).startOf('day');
   const daysFromMonday = (date.day() + 6) % 7;

@@ -78,16 +78,4 @@ export const countPresentDays = (records = {}, employeeId, startDate, endDate) =
   return count;
 };
 
-export const computeHourlyRate = (employee) => {
-  if (!employee) {
-    return 0;
-  }
-  const { expectedHoursPerDay } = employee;
-  if (!expectedHoursPerDay) {
-    return 0;
-  }
-  const dailySalary = (Number(employee.monthlySalary) || 0) / 30;
-  return dailySalary / expectedHoursPerDay;
-};
-
 export const roundToHalfHour = (value) => Math.round(value * 2) / 2;

@@ -5,7 +5,6 @@ import {
   formatDate,
   iterateDateRange,
   countWorkingDays,
-  computeHourlyRate,
   roundToHalfHour,
   getCurrentMonthRange,
   getMonthlyHolidays,
@@ -16,6 +15,7 @@ import {
   getCycleKey,
   getDueStatusForCycle,
   getLegacyMonthKey,
+  getPayrollRatesForCycle,
   getPayoutSummary,
   getRemainingAmount,
   getWeeklyCycleRange,
@@ -499,16 +499,13 @@ export const AttendanceProvider = ({ children }) => {
       }
 
       const summary = getSummaryForEmployee(employeeId, start, end);
-      const hourlyRate = computeHourlyRate(employee);
+      const rates = getPayrollRatesForCycle(employee, start, end);
+      const hourlyRate = rates.hourlyRate;
       const bonus = summary.extraHours > 0 ? summary.extraHours * hourlyRate : 0;
       const less = summary.extraHours < 0 ? Math.abs(summary.extraHours) * hourlyRate : 0;
       const chargeableAbsentDays = getChargeableAbsenceCountInRange(employeeId, employee, start, end);
-      const dailySalary = (Number(employee.monthlySalary) || 0) / 30;
-      const baseCompensation =
-        employee.paymentFrequency === 'weekly'
-          ? Number(employee.compensationAmount) || 0
-          : Number(employee.compensationAmount ?? employee.monthlySalary) || 0;
-      const absentDeduction = chargeableAbsentDays * dailySalary;
+      const baseCompensation = rates.baseCompensation;
+      const absentDeduction = chargeableAbsentDays * rates.dailyRate;
       const net = Math.max(baseCompensation + bonus - less - absentDeduction, 0);
 
       return {
@@ -519,6 +516,8 @@ export const AttendanceProvider = ({ children }) => {
         extraHours: summary.extraHours,
         hourlyRate,
         baseCompensation,
+        payableDays: rates.payableDays,
+        dailyRate: rates.dailyRate,
         chargeableAbsentDays,
         absentDeduction,
         bonus,

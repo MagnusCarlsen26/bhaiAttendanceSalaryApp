@@ -312,9 +312,14 @@ const AddEmployeeScreen = ({ navigation, route }) => {
             label={getCompensationLabel(formState.paymentFrequency)}
             value={formState.monthlySalary}
             onChangeText={(value) => updateField('monthlySalary', value)}
-            placeholder="50000"
+            placeholder={formState.paymentFrequency === 'weekly' ? '12000' : '50000'}
             keyboardType="numeric"
           />
+          <Text style={styles.helperText}>
+            {formState.paymentFrequency === 'weekly'
+              ? 'Enter the amount paid for one week.'
+              : 'Enter the amount paid for one month.'}
+          </Text>
           <View style={styles.fieldSpacing}>
             <Text style={styles.fieldLabel}>Payment frequency</Text>
             <View style={styles.frequencyWrap}>
