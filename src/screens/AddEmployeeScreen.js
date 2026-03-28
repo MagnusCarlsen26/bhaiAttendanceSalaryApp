@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -9,6 +9,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import dayjs from 'dayjs';
 import { useAttendance } from '../context/AttendanceContext';
@@ -17,118 +18,152 @@ import SectionCard from '../components/ui/SectionCard';
 import PrimaryButton from '../components/ui/PrimaryButton';
 import FormField from '../components/ui/FormField';
 import { colors, radius, type } from '../theme/tokens';
+import { getMonthlyHolidays } from '../utils/dateUtils';
+import { convertCompensation, getCompensationLabel } from '../utils/payroll';
 
-const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const DEFAULT_SHIFT_START = '09:00';
 const DEFAULT_SHIFT_END = '18:00';
+const EMPLOYEE_DRAFT_PREFIX = '@attendanceapp:employee-draft:';
 const PAYMENT_FREQUENCY_OPTIONS = [
   { label: 'Weekly', value: 'weekly' },
-  { label: 'Fortnightly', value: 'fortnightly' },
   { label: 'Monthly', value: 'monthly' },
 ];
 
-const getDefaultNonWorkingDays = (workingDaysPerWeek) => {
-  const normalizedWorkingDays = Number.isFinite(workingDaysPerWeek)
-    ? Math.min(7, Math.max(0, Math.floor(workingDaysPerWeek)))
-    : 0;
-  const daysOff = normalizedWorkingDays > 0 && normalizedWorkingDays < 7 ? 7 - normalizedWorkingDays : 0;
-
-  if (daysOff <= 0) {
-    return [];
-  }
-
-  if (daysOff === 1) {
-    return ['Sunday'];
-  }
-
-  if (daysOff === 2) {
-    return ['Saturday', 'Sunday'];
-  }
-
-  return weekdays.slice(0, daysOff);
-};
-
-const clampWorkingDays = (value) => {
+const clampMonthlyHolidays = (value) => {
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) {
     return 0;
   }
-  return Math.min(7, Math.max(0, Math.floor(numericValue)));
+  return Math.min(30, Math.max(0, Math.floor(numericValue)));
 };
+
+const buildInitialFormState = (employee) => ({
+  name: employee?.name || '',
+  expectedHours: String(employee?.expectedHoursPerDay ?? ''),
+  monthlyHolidays: String(getMonthlyHolidays(employee) ?? ''),
+  monthlySalary: String(employee?.compensationAmount ?? employee?.monthlySalary ?? ''),
+  paymentFrequency: employee?.paymentFrequency || 'monthly',
+  shiftStart: employee?.shiftStart || DEFAULT_SHIFT_START,
+  shiftEnd: employee?.shiftEnd || DEFAULT_SHIFT_END,
+});
+
+const serializeFormState = (state) =>
+  JSON.stringify({
+    name: state.name.trim(),
+    expectedHours: state.expectedHours.trim(),
+    monthlyHolidays: state.monthlyHolidays.trim(),
+    monthlySalary: state.monthlySalary.trim(),
+    paymentFrequency: state.paymentFrequency,
+    shiftStart: state.shiftStart,
+    shiftEnd: state.shiftEnd,
+  });
+
+const getDraftStorageKey = (employeeId) => `${EMPLOYEE_DRAFT_PREFIX}${employeeId ? `edit:${employeeId}` : 'new'}`;
 
 const AddEmployeeScreen = ({ navigation, route }) => {
   const { addEmployee, updateEmployee } = useAttendance();
   const employeeToEdit = route?.params?.employee ?? null;
   const isEditMode = Boolean(employeeToEdit?.id);
-  const [name, setName] = useState('');
-  const [expectedHours, setExpectedHours] = useState('');
-  const [workingDays, setWorkingDays] = useState('');
-  const [monthlySalary, setMonthlySalary] = useState('');
-  const [paymentFrequency, setPaymentFrequency] = useState('monthly');
-  const [nonWorkingDays, setNonWorkingDays] = useState([]);
-  const [shiftStart, setShiftStart] = useState(null);
-  const [shiftEnd, setShiftEnd] = useState(null);
+  const draftStorageKey = useMemo(() => getDraftStorageKey(employeeToEdit?.id), [employeeToEdit?.id]);
+  const baseFormState = useMemo(() => buildInitialFormState(employeeToEdit), [employeeToEdit]);
+  const [formState, setFormState] = useState(baseFormState);
   const [timePickerConfig, setTimePickerConfig] = useState(null);
+  const [draftReady, setDraftReady] = useState(false);
+  const isDirtyRef = useRef(false);
 
   useEffect(() => {
-    if (!employeeToEdit) {
-      setName('');
-      setExpectedHours('');
-      setWorkingDays('');
-      setMonthlySalary('');
-      setPaymentFrequency('monthly');
-      setNonWorkingDays([]);
-      setShiftStart(null);
-      setShiftEnd(null);
-      return;
-    }
-
-    setName(employeeToEdit.name || '');
-    setExpectedHours(String(employeeToEdit.expectedHoursPerDay ?? ''));
-    setWorkingDays(String(employeeToEdit.workingDaysPerWeek ?? ''));
-    setMonthlySalary(String(employeeToEdit.monthlySalary ?? ''));
-    setPaymentFrequency(employeeToEdit.paymentFrequency || 'monthly');
-    const fallbackNonWorkingDays = getDefaultNonWorkingDays(employeeToEdit.workingDaysPerWeek);
-
-    setNonWorkingDays(
-      Array.isArray(employeeToEdit.nonWorkingDays) && employeeToEdit.nonWorkingDays.length > 0
-        ? employeeToEdit.nonWorkingDays
-        : fallbackNonWorkingDays
-    );
-    setShiftStart(dayjs(`2000-01-01 ${employeeToEdit.shiftStart || DEFAULT_SHIFT_START}`));
-    setShiftEnd(dayjs(`2000-01-01 ${employeeToEdit.shiftEnd || DEFAULT_SHIFT_END}`));
-  }, [employeeToEdit]);
-
-  const workingDaysPerWeek = clampWorkingDays(workingDays);
-  const nonWorkingDayCount = workingDaysPerWeek > 0 && workingDaysPerWeek < 7 ? 7 - workingDaysPerWeek : 0;
-  const requiresNonWorkingDays = nonWorkingDayCount > 0;
+    isDirtyRef.current = serializeFormState(formState) !== serializeFormState(baseFormState);
+  }, [baseFormState, formState]);
 
   useEffect(() => {
-    if (!requiresNonWorkingDays) {
-      setNonWorkingDays([]);
-      return;
-    }
-    setNonWorkingDays((prev) => (prev.length <= nonWorkingDayCount ? prev : prev.slice(0, nonWorkingDayCount)));
-  }, [nonWorkingDayCount, requiresNonWorkingDays]);
+    let isActive = true;
 
-  const toggleNonWorkingDay = (day) => {
-    setNonWorkingDays((prev) => {
-      if (prev.includes(day)) {
-        return prev.filter((value) => value !== day);
+    const restoreDraft = async () => {
+      setDraftReady(false);
+      try {
+        const storedDraft = await AsyncStorage.getItem(draftStorageKey);
+        if (!isActive) {
+          return;
+        }
+
+        if (storedDraft) {
+          const parsed = JSON.parse(storedDraft);
+          setFormState({
+            ...baseFormState,
+            ...parsed,
+            paymentFrequency: parsed?.paymentFrequency || baseFormState.paymentFrequency,
+            shiftStart: parsed?.shiftStart || baseFormState.shiftStart,
+            shiftEnd: parsed?.shiftEnd || baseFormState.shiftEnd,
+          });
+        } else {
+          setFormState(baseFormState);
+        }
+      } catch (error) {
+        if (isActive) {
+          setFormState(baseFormState);
+        }
+      } finally {
+        if (isActive) {
+          setDraftReady(true);
+        }
       }
-      if (prev.length >= nonWorkingDayCount) {
+    };
+
+    restoreDraft();
+
+    return () => {
+      isActive = false;
+      if (!isDirtyRef.current) {
+        AsyncStorage.removeItem(draftStorageKey).catch(() => undefined);
+      }
+    };
+  }, [baseFormState, draftStorageKey]);
+
+  useEffect(() => {
+    if (!draftReady) {
+      return;
+    }
+
+    if (!isDirtyRef.current) {
+      AsyncStorage.removeItem(draftStorageKey).catch(() => undefined);
+      return;
+    }
+
+    AsyncStorage.setItem(draftStorageKey, serializeFormState(formState)).catch(() => undefined);
+  }, [draftReady, draftStorageKey, formState]);
+
+  const updateField = (key, value) => {
+    setFormState((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
+  const handlePaymentFrequencyChange = (nextFrequency) => {
+    setFormState((prev) => {
+      if (prev.paymentFrequency === nextFrequency) {
         return prev;
       }
-      return [...prev, day];
+
+      const currentAmount = prev.monthlySalary.trim();
+      const convertedAmount = currentAmount
+        ? String(convertCompensation(currentAmount, prev.paymentFrequency, nextFrequency))
+        : currentAmount;
+
+      return {
+        ...prev,
+        paymentFrequency: nextFrequency,
+        monthlySalary: convertedAmount,
+      };
     });
   };
 
   const openTimePicker = (target) => {
-    const currentValue = target === 'shiftStart' ? shiftStart : shiftEnd;
+    const currentValue = formState[target];
     const fallback = dayjs().startOf('minute');
     setTimePickerConfig({
       target,
-      value: currentValue ? currentValue.toDate() : fallback.toDate(),
+      value: currentValue ? dayjs(`2000-01-01 ${currentValue}`).toDate() : fallback.toDate(),
     });
   };
 
@@ -137,13 +172,9 @@ const AddEmployeeScreen = ({ navigation, route }) => {
       setTimePickerConfig(null);
       return;
     }
-    const nextDate = value || config.value;
-    const formattedValue = dayjs(nextDate);
-    if (config.target === 'shiftStart') {
-      setShiftStart(formattedValue);
-    } else {
-      setShiftEnd(formattedValue);
-    }
+
+    const formattedValue = dayjs(value || config.value).format('HH:mm');
+    updateField(config.target, formattedValue);
     setTimePickerConfig(null);
   };
 
@@ -155,89 +186,55 @@ const AddEmployeeScreen = ({ navigation, route }) => {
       setTimePickerConfig(null);
       return;
     }
+
     const nextDate = selectedDate || timePickerConfig.value;
     if (Platform.OS === 'android') {
       commitTimePickerValue(timePickerConfig, nextDate);
       return;
     }
+
     setTimePickerConfig((prev) => (prev ? { ...prev, value: nextDate } : prev));
   };
 
   const allFieldsFilled = useMemo(() => {
-    const trimmedName = name.trim();
-    const trimmedExpectedHours = expectedHours.trim();
-    const trimmedWorkingDays = workingDays.trim();
-    const trimmedMonthlySalary = monthlySalary.trim();
+    const trimmedName = formState.name.trim();
+    const trimmedExpectedHours = formState.expectedHours.trim();
+    const trimmedMonthlyHolidays = formState.monthlyHolidays.trim();
+    const trimmedMonthlySalary = formState.monthlySalary.trim();
 
-    if (!trimmedName || !trimmedExpectedHours || !trimmedWorkingDays || !trimmedMonthlySalary) {
-      return false;
-    }
-    if (!shiftStart?.isValid?.() || !shiftEnd?.isValid?.()) {
-      return false;
-    }
-    if (requiresNonWorkingDays && nonWorkingDays.length !== nonWorkingDayCount) {
-      return false;
-    }
-    return true;
-  }, [
-    expectedHours,
-    monthlySalary,
-    name,
-    nonWorkingDayCount,
-    nonWorkingDays,
-    requiresNonWorkingDays,
-    shiftEnd,
-    shiftStart,
-    workingDays,
-  ]);
+    return Boolean(
+      trimmedName &&
+        trimmedExpectedHours &&
+        trimmedMonthlyHolidays &&
+        trimmedMonthlySalary &&
+        formState.shiftStart &&
+        formState.shiftEnd
+    );
+  }, [formState]);
 
-  const handleSave = () => {
-    const resolvedName = name.trim() || employeeToEdit?.name || '';
-    const resolvedExpectedHours = expectedHours.trim() || String(employeeToEdit?.expectedHoursPerDay ?? '');
-    const resolvedWorkingDays = workingDays.trim() || String(employeeToEdit?.workingDaysPerWeek ?? '');
-    const resolvedMonthlySalary = monthlySalary.trim() || String(employeeToEdit?.monthlySalary ?? '');
-    const resolvedPaymentFrequency = paymentFrequency || employeeToEdit?.paymentFrequency || 'monthly';
-    const resolvedWorkingDaysPerWeek = clampWorkingDays(resolvedWorkingDays);
-    const resolvedNonWorkingDayCount =
-      resolvedWorkingDaysPerWeek > 0 && resolvedWorkingDaysPerWeek < 7 ? 7 - resolvedWorkingDaysPerWeek : 0;
-    const resolvedRequiresNonWorkingDays = resolvedNonWorkingDayCount > 0;
-    const fallbackNonWorkingDays = getDefaultNonWorkingDays(resolvedWorkingDaysPerWeek);
-    const resolvedNonWorkingDays =
-      nonWorkingDays.length > 0
-        ? nonWorkingDays
-        : Array.isArray(employeeToEdit?.nonWorkingDays) && employeeToEdit.nonWorkingDays.length > 0
-          ? employeeToEdit.nonWorkingDays
-          : fallbackNonWorkingDays;
-    const resolvedShiftStart =
-      shiftStart?.isValid?.() ? shiftStart : dayjs(`2000-01-01 ${employeeToEdit?.shiftStart || DEFAULT_SHIFT_START}`);
-    const resolvedShiftEnd =
-      shiftEnd?.isValid?.() ? shiftEnd : dayjs(`2000-01-01 ${employeeToEdit?.shiftEnd || DEFAULT_SHIFT_END}`);
+  const handleSave = async () => {
+    const resolvedName = formState.name.trim() || employeeToEdit?.name || '';
+    const resolvedExpectedHours = formState.expectedHours.trim() || String(employeeToEdit?.expectedHoursPerDay ?? '');
+    const resolvedMonthlyHolidays = formState.monthlyHolidays.trim() || String(getMonthlyHolidays(employeeToEdit));
+    const resolvedMonthlySalary =
+      formState.monthlySalary.trim() || String(employeeToEdit?.compensationAmount ?? employeeToEdit?.monthlySalary ?? '');
+    const resolvedPaymentFrequency = formState.paymentFrequency || employeeToEdit?.paymentFrequency || 'monthly';
+    const resolvedShiftStart = formState.shiftStart || employeeToEdit?.shiftStart || DEFAULT_SHIFT_START;
+    const resolvedShiftEnd = formState.shiftEnd || employeeToEdit?.shiftEnd || DEFAULT_SHIFT_END;
 
-    const hasRequiredValues =
-      resolvedName &&
-      resolvedExpectedHours &&
-      resolvedWorkingDays &&
-      resolvedMonthlySalary &&
-      resolvedShiftStart?.isValid?.() &&
-      resolvedShiftEnd?.isValid?.();
-
-    if (!hasRequiredValues) {
+    if (!resolvedName || !resolvedExpectedHours || !resolvedMonthlyHolidays || !resolvedMonthlySalary) {
       Alert.alert('Validation', 'Complete every required field.');
-      return;
-    }
-    if (resolvedRequiresNonWorkingDays && resolvedNonWorkingDays.length !== resolvedNonWorkingDayCount) {
-      Alert.alert('Validation', `Choose ${resolvedNonWorkingDayCount} off day${resolvedNonWorkingDayCount === 1 ? '' : 's'}.`);
       return;
     }
 
     const employeePayload = {
       name: resolvedName,
       expectedHoursPerDay: Number(resolvedExpectedHours),
-      workingDaysPerWeek: resolvedWorkingDaysPerWeek,
-      nonWorkingDays: resolvedRequiresNonWorkingDays ? resolvedNonWorkingDays : [],
-      shiftStart: resolvedShiftStart.format('HH:mm'),
-      shiftEnd: resolvedShiftEnd.format('HH:mm'),
-      monthlySalary: Number(resolvedMonthlySalary),
+      monthlyHolidays: clampMonthlyHolidays(resolvedMonthlyHolidays),
+      shiftStart: resolvedShiftStart,
+      shiftEnd: resolvedShiftEnd,
+      compensationAmount: Number(resolvedMonthlySalary),
+      monthlySalary: convertCompensation(Number(resolvedMonthlySalary), resolvedPaymentFrequency, 'monthly'),
       paymentFrequency: resolvedPaymentFrequency,
     };
 
@@ -246,6 +243,14 @@ const AddEmployeeScreen = ({ navigation, route }) => {
     } else {
       addEmployee(employeePayload);
     }
+
+    try {
+      await AsyncStorage.removeItem(draftStorageKey);
+    } catch (error) {
+      // Ignore draft cleanup failures after a successful save.
+    }
+
+    isDirtyRef.current = false;
     navigation.goBack();
   };
 
@@ -254,69 +259,47 @@ const AddEmployeeScreen = ({ navigation, route }) => {
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         <SectionCard style={styles.section}>
           <Text style={styles.sectionTitle}>Identity</Text>
-          <FormField label="Name" value={name} onChangeText={setName} placeholder="Ravi" />
+          <FormField
+            label="Name"
+            value={formState.name}
+            onChangeText={(value) => updateField('name', value)}
+            placeholder="Ravi"
+          />
         </SectionCard>
 
         <SectionCard style={styles.section}>
           <Text style={styles.sectionTitle}>Schedule</Text>
           <FormField
             label="Hours / day"
-            value={expectedHours}
-            onChangeText={setExpectedHours}
+            value={formState.expectedHours}
+            onChangeText={(value) => updateField('expectedHours', value)}
             placeholder="8"
             keyboardType="numeric"
           />
           <FormField
-            label="Days / week"
-            value={workingDays}
-            onChangeText={setWorkingDays}
-            placeholder="6"
+            label="Monthly holidays"
+            value={formState.monthlyHolidays}
+            onChangeText={(value) => updateField('monthlyHolidays', value)}
+            placeholder="4"
             keyboardType="numeric"
             style={styles.fieldSpacing}
           />
-
-          {requiresNonWorkingDays ? (
-            <View style={styles.fieldSpacing}>
-              <Text style={styles.fieldLabel}>Off days</Text>
-              <View style={styles.weekdayWrap}>
-                {weekdays.map((day) => {
-                  const selected = nonWorkingDays.includes(day);
-                  const disabled = !selected && nonWorkingDays.length >= nonWorkingDayCount;
-                  return (
-                    <Pressable
-                      key={day}
-                      disabled={disabled}
-                      onPress={() => toggleNonWorkingDay(day)}
-                      style={({ pressed }) => [
-                        styles.weekdayChip,
-                        selected && styles.weekdayChipSelected,
-                        disabled && styles.weekdayChipDisabled,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text style={[styles.weekdayText, selected && styles.weekdayTextSelected]}>{day.slice(0, 3)}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-              <Text style={styles.helperText}>Choose {nonWorkingDayCount} off day{nonWorkingDayCount === 1 ? '' : 's'}.</Text>
-            </View>
-          ) : null}
+          <Text style={styles.helperText}>Employee can use these paid holidays on any day of the month.</Text>
 
           <View style={[styles.timeRow, styles.fieldSpacing]}>
             <View style={styles.timeColumn}>
               <Text style={styles.fieldLabel}>Shift start</Text>
               <Pressable style={styles.timeButton} onPress={() => openTimePicker('shiftStart')}>
-                <Text style={[styles.timeText, !shiftStart && styles.timePlaceholder]}>
-                  {shiftStart ? shiftStart.format('hh:mm A') : 'Select'}
+                <Text style={[styles.timeText, !formState.shiftStart && styles.timePlaceholder]}>
+                  {formState.shiftStart ? dayjs(`2000-01-01 ${formState.shiftStart}`).format('hh:mm A') : 'Select'}
                 </Text>
               </Pressable>
             </View>
             <View style={[styles.timeColumn, styles.timeColumnGap]}>
               <Text style={styles.fieldLabel}>Shift end</Text>
               <Pressable style={styles.timeButton} onPress={() => openTimePicker('shiftEnd')}>
-                <Text style={[styles.timeText, !shiftEnd && styles.timePlaceholder]}>
-                  {shiftEnd ? shiftEnd.format('hh:mm A') : 'Select'}
+                <Text style={[styles.timeText, !formState.shiftEnd && styles.timePlaceholder]}>
+                  {formState.shiftEnd ? dayjs(`2000-01-01 ${formState.shiftEnd}`).format('hh:mm A') : 'Select'}
                 </Text>
               </Pressable>
             </View>
@@ -326,9 +309,9 @@ const AddEmployeeScreen = ({ navigation, route }) => {
         <SectionCard style={styles.section} tinted>
           <Text style={styles.sectionTitle}>Compensation</Text>
           <FormField
-            label="Monthly salary"
-            value={monthlySalary}
-            onChangeText={setMonthlySalary}
+            label={getCompensationLabel(formState.paymentFrequency)}
+            value={formState.monthlySalary}
+            onChangeText={(value) => updateField('monthlySalary', value)}
             placeholder="50000"
             keyboardType="numeric"
           />
@@ -336,11 +319,11 @@ const AddEmployeeScreen = ({ navigation, route }) => {
             <Text style={styles.fieldLabel}>Payment frequency</Text>
             <View style={styles.frequencyWrap}>
               {PAYMENT_FREQUENCY_OPTIONS.map((option) => {
-                const selected = paymentFrequency === option.value;
+                const selected = formState.paymentFrequency === option.value;
                 return (
                   <Pressable
                     key={option.value}
-                    onPress={() => setPaymentFrequency(option.value)}
+                    onPress={() => handlePaymentFrequencyChange(option.value)}
                     style={({ pressed }) => [
                       styles.frequencyChip,
                       selected && styles.frequencyChipSelected,
@@ -358,7 +341,7 @@ const AddEmployeeScreen = ({ navigation, route }) => {
         <PrimaryButton
           label={isEditMode ? 'Update employee' : 'Save employee'}
           onPress={handleSave}
-          disabled={!isEditMode && !allFieldsFilled}
+          disabled={!draftReady || (!isEditMode && !allFieldsFilled)}
           style={styles.saveButton}
         />
       </ScrollView>
@@ -425,39 +408,8 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginBottom: 8,
   },
-  weekdayWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  weekdayChip: {
-    minWidth: 62,
-    minHeight: 44,
-    paddingHorizontal: 14,
-    borderRadius: radius.pill,
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-    marginBottom: 8,
-  },
-  weekdayChipSelected: {
-    backgroundColor: colors.accentStrong,
-    borderColor: colors.accentStrong,
-  },
-  weekdayChipDisabled: {
-    opacity: 0.4,
-  },
-  weekdayText: {
-    color: colors.text,
-    fontWeight: '700',
-  },
-  weekdayTextSelected: {
-    color: colors.white,
-  },
   helperText: {
-    marginTop: 4,
+    marginTop: 8,
     color: colors.textMuted,
     fontSize: 13,
   },
@@ -521,29 +473,32 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',
-    backgroundColor: colors.overlay,
+    backgroundColor: 'rgba(34, 31, 26, 0.24)',
   },
   modalSheet: {
     backgroundColor: colors.surface,
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    paddingBottom: 20,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    paddingBottom: 18,
+    paddingTop: 10,
   },
   modalActions: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
     paddingHorizontal: 18,
+    paddingTop: 8,
   },
   modalAction: {
-    marginLeft: 20,
-    paddingVertical: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
   },
   modalActionText: {
     color: colors.accentStrong,
     fontWeight: '700',
+    fontSize: 16,
   },
   pressed: {
-    opacity: 0.84,
+    opacity: 0.82,
   },
 });
 

@@ -1,7 +1,29 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import dayjs from 'dayjs';
-import { formatDate, iterateDateRange, countWorkingDays, isWorkingDay, computeHourlyRate, roundToHalfHour, getCurrentMonthRange } from '../utils/dateUtils';
+import {
+  formatDate,
+  iterateDateRange,
+  countWorkingDays,
+  computeHourlyRate,
+  roundToHalfHour,
+  getCurrentMonthRange,
+  getMonthlyHolidays,
+  countPresentDays,
+} from '../utils/dateUtils';
+import {
+  convertCompensation,
+  getCycleKey,
+  getDueStatusForCycle,
+  getLegacyMonthKey,
+  getPayoutSummary,
+  getRemainingAmount,
+  getWeeklyCycleRange,
+  getWeeklyDueDatesInMonth,
+  getMonthlyCycleRange,
+  getMonthlyDueDate,
+  normalizePaymentFrequency,
+} from '../utils/payroll';
 
 const EMP_KEY = '@attendanceapp:employees';
 const RECORD_KEY = '@attendanceapp:records';
@@ -12,19 +34,17 @@ let storageWarningShown = false;
 
 const defaultRecord = { present: false, extraHours: 0, arrivalTime: null, needsReconfirm: false, markedAbsent: false };
 const TEST_EMPLOYEE_PREFIX = 'test-emp-';
-const VALID_PAYMENT_FREQUENCIES = ['weekly', 'fortnightly', 'monthly'];
-const normalizePaymentFrequency = (value) => (VALID_PAYMENT_FREQUENCIES.includes(value) ? value : 'monthly');
 const TEST_EMPLOYEE_CONFIGS = [
-  { name: 'Aarav', expectedHoursPerDay: 8, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 28000, paymentFrequency: 'monthly' },
-  { name: 'Vivaan', expectedHoursPerDay: 9, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 32000, paymentFrequency: 'monthly' },
-  { name: 'Aditya', expectedHoursPerDay: 8, workingDaysPerWeek: 5, nonWorkingDays: ['Saturday', 'Sunday'], monthlySalary: 30000, paymentFrequency: 'monthly' },
-  { name: 'Vihaan', expectedHoursPerDay: 10, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 36000, paymentFrequency: 'monthly' },
-  { name: 'Arjun', expectedHoursPerDay: 8, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 29000, paymentFrequency: 'monthly' },
-  { name: 'Sai', expectedHoursPerDay: 7, workingDaysPerWeek: 5, nonWorkingDays: ['Saturday', 'Sunday'], monthlySalary: 25000, paymentFrequency: 'monthly' },
-  { name: 'Reyansh', expectedHoursPerDay: 9, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 34000, paymentFrequency: 'monthly' },
-  { name: 'Krishna', expectedHoursPerDay: 8, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 31000, paymentFrequency: 'monthly' },
-  { name: 'Ishaan', expectedHoursPerDay: 8, workingDaysPerWeek: 5, nonWorkingDays: ['Saturday', 'Sunday'], monthlySalary: 27000, paymentFrequency: 'monthly' },
-  { name: 'Kabir', expectedHoursPerDay: 9, workingDaysPerWeek: 6, nonWorkingDays: ['Sunday'], monthlySalary: 33000, paymentFrequency: 'monthly' },
+  { name: 'Aarav', expectedHoursPerDay: 8, monthlyHolidays: 4, monthlySalary: 28000, paymentFrequency: 'monthly' },
+  { name: 'Vivaan', expectedHoursPerDay: 9, monthlyHolidays: 4, monthlySalary: 32000, paymentFrequency: 'monthly' },
+  { name: 'Aditya', expectedHoursPerDay: 8, monthlyHolidays: 8, monthlySalary: 30000, paymentFrequency: 'monthly' },
+  { name: 'Vihaan', expectedHoursPerDay: 10, monthlyHolidays: 4, monthlySalary: 36000, paymentFrequency: 'monthly' },
+  { name: 'Arjun', expectedHoursPerDay: 8, monthlyHolidays: 4, monthlySalary: 29000, paymentFrequency: 'monthly' },
+  { name: 'Sai', expectedHoursPerDay: 7, monthlyHolidays: 8, monthlySalary: 25000, paymentFrequency: 'monthly' },
+  { name: 'Reyansh', expectedHoursPerDay: 9, monthlyHolidays: 4, monthlySalary: 34000, paymentFrequency: 'monthly' },
+  { name: 'Krishna', expectedHoursPerDay: 8, monthlyHolidays: 4, monthlySalary: 31000, paymentFrequency: 'monthly' },
+  { name: 'Ishaan', expectedHoursPerDay: 8, monthlyHolidays: 8, monthlySalary: 27000, paymentFrequency: 'monthly' },
+  { name: 'Kabir', expectedHoursPerDay: 9, monthlyHolidays: 4, monthlySalary: 33000, paymentFrequency: 'monthly' },
 ];
 
 const AttendanceContext = createContext({});
@@ -32,10 +52,34 @@ const AttendanceContext = createContext({});
 const generateId = () => `emp-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 const sortEmployeesByName = (list) =>
   [...list].sort((a, b) => (a?.name || '').localeCompare(b?.name || '', undefined, { sensitivity: 'base' }));
-const normalizeEmployee = (employee) => ({
-  ...employee,
-  paymentFrequency: normalizePaymentFrequency(employee?.paymentFrequency),
-});
+
+const normalizeEmployee = (employee) => {
+  const { nonWorkingDay, nonWorkingDays, workingDaysPerWeek, ...rest } = employee || {};
+  const paymentFrequency = normalizePaymentFrequency(employee?.paymentFrequency);
+  const explicitCompensationAmount = Number(employee?.compensationAmount);
+  const legacyMonthlySalary = Number(employee?.monthlySalary);
+
+  let compensationAmount = Number.isFinite(explicitCompensationAmount) ? explicitCompensationAmount : 0;
+  let monthlySalary = Number.isFinite(legacyMonthlySalary) ? legacyMonthlySalary : 0;
+
+  if (!Number.isFinite(explicitCompensationAmount)) {
+    compensationAmount =
+      paymentFrequency === 'weekly'
+        ? convertCompensation(monthlySalary, 'monthly', 'weekly')
+        : monthlySalary;
+  } else {
+    monthlySalary = convertCompensation(compensationAmount, paymentFrequency, 'monthly');
+  }
+
+  return {
+    ...rest,
+    paymentFrequency,
+    compensationAmount,
+    monthlySalary,
+    monthlyHolidays: getMonthlyHolidays(employee),
+  };
+};
+
 const getAdjustedHoursFromArrival = (employee, arrivalTime) => {
   if (!employee?.shiftStart || !arrivalTime) {
     return 0;
@@ -188,7 +232,7 @@ export const AttendanceProvider = ({ children }) => {
   const seedTestData = useCallback(() => {
     const seededEmployees = TEST_EMPLOYEE_CONFIGS.map((config, index) => ({
       id: `${TEST_EMPLOYEE_PREFIX}${index + 1}`,
-      ...config,
+      ...normalizeEmployee(config),
       shiftStart: '09:00',
       shiftEnd: '18:00',
       isTestData: true,
@@ -203,10 +247,6 @@ export const AttendanceProvider = ({ children }) => {
       const dayRecords = {};
 
       seededEmployees.forEach((employee, index) => {
-        if (!isWorkingDay(employee, cursor)) {
-          return;
-        }
-
         const dayOffset = cursor.diff(startDate, 'day');
         const absencePattern = (dayOffset + index * 3) % 11 === 0;
         const extraPattern = ((dayOffset * 2) + index) % 6;
@@ -367,18 +407,12 @@ export const AttendanceProvider = ({ children }) => {
     if (!employee) {
       return { presentDays: 0, extraHours: 0, workingDays: 0 };
     }
-    let presentDays = 0;
     let extraHours = 0;
     iterateDateRange(start, end, (cursor) => {
-      if (!isWorkingDay(employee, cursor)) {
-        return;
-      }
       const record = getRecord(cursor, employeeId);
-      if (record.present) {
-        presentDays += 1;
-      }
       extraHours += record.extraHours || 0;
     });
+    const presentDays = countPresentDays(attendanceRecords, employeeId, start, end);
     const workingDays = countWorkingDays(employee, start, end);
     return { presentDays, extraHours, workingDays };
   };
@@ -390,9 +424,6 @@ export const AttendanceProvider = ({ children }) => {
       employeeIds.forEach((employeeId) => {
         const employee = employees.find((emp) => emp.id === employeeId);
         if (!employee) {
-          return;
-        }
-        if (!isWorkingDay(employee, cursor)) {
           return;
         }
         const record = getRecord(dateKey, employeeId);
@@ -410,78 +441,153 @@ export const AttendanceProvider = ({ children }) => {
     return entries.sort((a, b) => (a.date < b.date ? 1 : -1));
   };
 
-  const getSalaryBreakdown = (employeeId, start, end) => {
-    const employee = employees.find((emp) => emp.id === employeeId);
-    if (!employee) {
-      return null;
-    }
-    const summary = getSummaryForEmployee(employeeId, start, end);
-    let extraHours = 0;
-    iterateDateRange(start, end, (cursor) => {
-      if (!isWorkingDay(employee, cursor)) {
-        return;
-      }
-      const record = getRecord(cursor, employeeId);
-      extraHours += record.extraHours || 0;
-    });
-    const hourlyRate = computeHourlyRate(employee);
-    const bonus = extraHours > 0 ? extraHours * hourlyRate : 0;
-    const less = extraHours < 0 ? Math.abs(extraHours) * hourlyRate : 0;
-    const perDaySalary = (Number(employee.monthlySalary) || 0) / 30;
-    const earnedBase = Math.min(summary.presentDays * perDaySalary, Number(employee.monthlySalary) || 0);
-    const absentDeduction = Math.max((Number(employee.monthlySalary) || 0) - earnedBase, 0);
-    const net = Math.max(earnedBase + bonus - less, 0);
-    return {
-      employee,
-      presentDays: summary.presentDays,
-      workingDays: summary.workingDays,
-      extraHours,
-      hourlyRate,
-      earnedBase,
-      absentDeduction,
-      bonus,
-      less,
-      net,
-    };
-  };
+  const buildMonthAbsenceLedger = useCallback(
+    (employeeId, employee, monthDate) => {
+      const monthRange = getMonthlyCycleRange(monthDate);
+      const ledgerEnd = monthRange.end.isAfter(dayjs(), 'day') ? dayjs().startOf('day') : monthRange.end;
+      const chargeableDates = new Set();
+      let absentCount = 0;
+      const paidLeaveAllowance = getMonthlyHolidays(employee);
 
-  const getTotalSalary = (start, end) => {
-    return employees.reduce((total, employee) => {
-      const breakdown = getSalaryBreakdown(employee.id, start, end);
-      return total + (breakdown?.net || 0);
-    }, 0);
-  };
+      iterateDateRange(monthRange.start, ledgerEnd, (cursor) => {
+        const dateKey = formatDate(cursor);
+        const isPresent = getRecord(dateKey, employeeId).present;
+        if (isPresent) {
+          return;
+        }
 
-  const getPayoutMonthKey = (date = formatDate()) => dayjs(date).format('YYYY-MM');
+        absentCount += 1;
+        if (absentCount > paidLeaveAllowance) {
+          chargeableDates.add(dateKey);
+        }
+      });
 
-  const getPayoutStatus = (employeeId, date = formatDate()) => {
-    const monthKey = getPayoutMonthKey(date);
-    const entry = payoutRecords?.[monthKey]?.[employeeId] || null;
-    if (!entry) {
-      return null;
-    }
-    if (Array.isArray(entry.payments)) {
-      return entry;
-    }
-    if (entry.status) {
       return {
-        payments: [
-          {
-            status: entry.status,
-            amount: entry.amount,
-            updatedAt: entry.updatedAt,
-          },
-        ],
+        absentCount,
+        chargeableDates,
       };
-    }
-    return null;
-  };
+    },
+    [getRecord]
+  );
 
-  const setPayoutStatus = (employeeId, status, date = formatDate(), amount = null) => {
-    const monthKey = getPayoutMonthKey(date);
+  const getChargeableAbsenceCountInRange = useCallback(
+    (employeeId, employee, start, end) => {
+      const monthLedgers = new Map();
+      let count = 0;
+
+      iterateDateRange(start, end, (cursor) => {
+        const monthKey = cursor.format('YYYY-MM');
+        if (!monthLedgers.has(monthKey)) {
+          monthLedgers.set(monthKey, buildMonthAbsenceLedger(employeeId, employee, cursor));
+        }
+
+        if (monthLedgers.get(monthKey).chargeableDates.has(formatDate(cursor))) {
+          count += 1;
+        }
+      });
+
+      return count;
+    },
+    [buildMonthAbsenceLedger]
+  );
+
+  const getSalaryBreakdown = useCallback(
+    (employeeId, start, end) => {
+      const employee = employees.find((emp) => emp.id === employeeId);
+      if (!employee) {
+        return null;
+      }
+
+      const summary = getSummaryForEmployee(employeeId, start, end);
+      const hourlyRate = computeHourlyRate(employee);
+      const bonus = summary.extraHours > 0 ? summary.extraHours * hourlyRate : 0;
+      const less = summary.extraHours < 0 ? Math.abs(summary.extraHours) * hourlyRate : 0;
+      const chargeableAbsentDays = getChargeableAbsenceCountInRange(employeeId, employee, start, end);
+      const dailySalary = (Number(employee.monthlySalary) || 0) / 30;
+      const baseCompensation =
+        employee.paymentFrequency === 'weekly'
+          ? Number(employee.compensationAmount) || 0
+          : Number(employee.compensationAmount ?? employee.monthlySalary) || 0;
+      const absentDeduction = chargeableAbsentDays * dailySalary;
+      const net = Math.max(baseCompensation + bonus - less - absentDeduction, 0);
+
+      return {
+        employee,
+        presentDays: summary.presentDays,
+        workingDays: summary.workingDays,
+        monthlyHolidays: getMonthlyHolidays(employee),
+        extraHours: summary.extraHours,
+        hourlyRate,
+        baseCompensation,
+        chargeableAbsentDays,
+        absentDeduction,
+        bonus,
+        less,
+        net,
+      };
+    },
+    [employees, getChargeableAbsenceCountInRange, getSummaryForEmployee]
+  );
+
+  const getTotalSalary = useCallback(
+    (start, end) =>
+      employees.reduce((total, employee) => {
+        const breakdown = getSalaryBreakdown(employee.id, start, end);
+        return total + (breakdown?.net || 0);
+      }, 0),
+    [employees, getSalaryBreakdown]
+  );
+
+  const getPayoutStatus = useCallback(
+    (employeeId, cycleKey, frequency = 'monthly', dueDate = null) => {
+      const cycleEntry = payoutRecords?.[cycleKey]?.[employeeId] || null;
+      if (cycleEntry) {
+        if (Array.isArray(cycleEntry.payments)) {
+          return cycleEntry;
+        }
+        if (cycleEntry.status) {
+          return {
+            payments: [
+              {
+                status: cycleEntry.status,
+                amount: cycleEntry.amount,
+                updatedAt: cycleEntry.updatedAt,
+              },
+            ],
+          };
+        }
+      }
+
+      if (frequency === 'monthly' && dueDate) {
+        const legacyMonthKey = getLegacyMonthKey(dueDate);
+        const legacyEntry = payoutRecords?.[legacyMonthKey]?.[employeeId] || null;
+        if (legacyEntry) {
+          if (Array.isArray(legacyEntry.payments)) {
+            return legacyEntry;
+          }
+          if (legacyEntry.status) {
+            return {
+              payments: [
+                {
+                  status: legacyEntry.status,
+                  amount: legacyEntry.amount,
+                  updatedAt: legacyEntry.updatedAt,
+                },
+              ],
+            };
+          }
+        }
+      }
+
+      return null;
+    },
+    [payoutRecords]
+  );
+
+  const setPayoutStatus = useCallback((employeeId, status, cycleKey, amount = null, frequency = 'monthly', dueDate = null) => {
     updatePayoutRecords((prev) => {
-      const monthRecords = prev[monthKey] ? { ...prev[monthKey] } : {};
-      const existingEntry = monthRecords[employeeId];
+      const next = { ...prev };
+      const existingEntry = next?.[cycleKey]?.[employeeId];
       const existingPayments =
         Array.isArray(existingEntry?.payments)
           ? existingEntry.payments
@@ -494,42 +600,133 @@ export const AttendanceProvider = ({ children }) => {
                 },
               ]
             : [];
-      monthRecords[employeeId] = {
-        payments: [
-          ...existingPayments,
-          {
-            status,
-            amount,
-            updatedAt: dayjs().toISOString(),
-          },
-        ],
-      };
-      return {
-        ...prev,
-        [monthKey]: monthRecords,
-      };
-    });
-  };
 
-  const clearPayoutStatus = (employeeId, date = formatDate()) => {
-    const monthKey = getPayoutMonthKey(date);
-    updatePayoutRecords((prev) => {
-      if (!prev?.[monthKey]?.[employeeId]) {
-        return prev;
-      }
-      const monthRecords = { ...prev[monthKey] };
-      delete monthRecords[employeeId];
-      if (Object.keys(monthRecords).length === 0) {
-        const next = { ...prev };
-        delete next[monthKey];
-        return next;
-      }
-      return {
-        ...prev,
-        [monthKey]: monthRecords,
+      next[cycleKey] = {
+        ...(next[cycleKey] || {}),
+        [employeeId]: {
+          payments: [
+            ...existingPayments,
+            {
+              status,
+              amount,
+              updatedAt: dayjs().toISOString(),
+            },
+          ],
+        },
       };
+
+      if (frequency === 'monthly' && dueDate) {
+        const legacyMonthKey = getLegacyMonthKey(dueDate);
+        if (legacyMonthKey !== cycleKey && next[legacyMonthKey]?.[employeeId]) {
+          const legacyMonthRecords = { ...next[legacyMonthKey] };
+          delete legacyMonthRecords[employeeId];
+          if (Object.keys(legacyMonthRecords).length === 0) {
+            delete next[legacyMonthKey];
+          } else {
+            next[legacyMonthKey] = legacyMonthRecords;
+          }
+        }
+      }
+
+      return next;
     });
-  };
+  }, []);
+
+  const clearPayoutStatus = useCallback((employeeId, cycleKey, frequency = 'monthly', dueDate = null) => {
+    updatePayoutRecords((prev) => {
+      const next = { ...prev };
+      const keysToClear = [cycleKey];
+
+      if (frequency === 'monthly' && dueDate) {
+        keysToClear.push(getLegacyMonthKey(dueDate));
+      }
+
+      let changed = false;
+      keysToClear.forEach((key) => {
+        if (!next?.[key]?.[employeeId]) {
+          return;
+        }
+
+        const cycleEntries = { ...next[key] };
+        delete cycleEntries[employeeId];
+        if (Object.keys(cycleEntries).length === 0) {
+          delete next[key];
+        } else {
+          next[key] = cycleEntries;
+        }
+        changed = true;
+      });
+
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const buildPayrollCycle = useCallback(
+    (employee, range, dueDate, cycleType) => {
+      const breakdown = getSalaryBreakdown(employee.id, range.start, range.end);
+      const cycleKey = getCycleKey(employee.paymentFrequency, dueDate);
+      const payoutStatus = getPayoutStatus(employee.id, cycleKey, employee.paymentFrequency, dueDate);
+      const status = getDueStatusForCycle(breakdown?.net || 0, payoutStatus, dueDate);
+
+      return {
+        employee,
+        cycleKey,
+        cycleType,
+        start: range.start,
+        end: range.end,
+        dueDate,
+        breakdown,
+        payoutStatus,
+        payoutSummary: getPayoutSummary(payoutStatus),
+        remainingAmount: getRemainingAmount(breakdown?.net || 0, payoutStatus),
+        status,
+      };
+    },
+    [getPayoutStatus, getSalaryBreakdown]
+  );
+
+  const getPayCyclesForEmployee = useCallback(
+    (employeeId, monthDate = dayjs()) => {
+      const employee = employees.find((emp) => emp.id === employeeId);
+      if (!employee) {
+        return [];
+      }
+
+      if (employee.paymentFrequency === 'weekly') {
+        return getWeeklyDueDatesInMonth(monthDate).map((dueDate) =>
+          buildPayrollCycle(employee, getWeeklyCycleRange(dueDate), dueDate, 'weekly')
+        );
+      }
+
+      const monthlyRange = getMonthlyCycleRange(monthDate);
+      const dueDate = getMonthlyDueDate(monthDate);
+      return [buildPayrollCycle(employee, monthlyRange, dueDate, 'monthly')];
+    },
+    [buildPayrollCycle, employees]
+  );
+
+  const getEmployeePaymentStatusForMonth = useCallback(
+    (employeeId, monthDate = dayjs()) => {
+      const cycles = getPayCyclesForEmployee(employeeId, monthDate);
+      if (cycles.length === 0) {
+        return { key: 'not_due', label: 'Not due yet', tone: 'neutral', icon: '○' };
+      }
+
+      const today = dayjs().startOf('day');
+      const dueCycles = cycles.filter((cycle) => !cycle.dueDate.isAfter(today, 'day'));
+      if (dueCycles.some((cycle) => cycle.status.key === 'partial')) {
+        return { key: 'partial', label: 'Partially paid', tone: 'accent', icon: '◐' };
+      }
+      if (dueCycles.some((cycle) => cycle.status.key === 'due')) {
+        return { key: 'due', label: 'Due', tone: 'absent', icon: '▲' };
+      }
+      if (dueCycles.length > 0 && dueCycles.every((cycle) => cycle.status.key === 'paid')) {
+        return { key: 'paid', label: 'Paid', tone: 'present', icon: '●' };
+      }
+      return { key: 'not_due', label: 'Not due yet', tone: 'neutral', icon: '○' };
+    },
+    [getPayCyclesForEmployee]
+  );
 
   const refreshData = useCallback(async () => {
     await loadData();
@@ -574,12 +771,28 @@ export const AttendanceProvider = ({ children }) => {
       getPayoutStatus,
       setPayoutStatus,
       clearPayoutStatus,
+      getPayCyclesForEmployee,
+      getEmployeePaymentStatusForMonth,
       refreshData,
       seedTestData,
       clearTestData,
       getCurrentMonthRange,
     }),
-    [employees, attendanceRecords, payoutRecords, loading, ensureRecordsForDate, refreshData, clearTestData, seedTestData]
+    [
+      attendanceRecords,
+      clearTestData,
+      employees,
+      ensureRecordsForDate,
+      getEmployeePaymentStatusForMonth,
+      getPayCyclesForEmployee,
+      getPayoutStatus,
+      getSalaryBreakdown,
+      getSummaryForEmployee,
+      getTotalSalary,
+      loading,
+      refreshData,
+      seedTestData,
+    ]
   );
 
   return <AttendanceContext.Provider value={memoizedValue}>{children}</AttendanceContext.Provider>;

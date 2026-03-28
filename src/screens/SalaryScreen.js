@@ -14,34 +14,15 @@ import dayjs from 'dayjs';
 import { useNavigation } from '@react-navigation/native';
 import { useAttendance } from '../context/AttendanceContext';
 import { formatCurrencyNoPaise, formatHours } from '../utils/formatters';
+import { getCompensationLabel, getCycleCompensationLabel } from '../utils/payroll';
 import Screen from '../components/ui/Screen';
 import SectionCard from '../components/ui/SectionCard';
 import EmptyState from '../components/ui/EmptyState';
 import PrimaryButton from '../components/ui/PrimaryButton';
+import MetricPill from '../components/ui/MetricPill';
 import { colors, radius, type } from '../theme/tokens';
 
 const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-const getPayoutSummary = (payoutStatus) => {
-  const payments = Array.isArray(payoutStatus?.payments) ? payoutStatus.payments : [];
-  if (payments.length === 0) {
-    return null;
-  }
-
-  const totalPaid = payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
-  const fullSalaryPaid = payments.some((payment) => payment.status === 'salary_paid');
-  const advancePaid = payments
-    .filter((payment) => payment.status === 'advance_paid')
-    .reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
-
-  return {
-    totalPaid,
-    fullSalaryPaid,
-    advancePaid,
-    latestPaidAt: payments[payments.length - 1]?.updatedAt || null,
-    payments,
-  };
-};
 
 const formatPaymentDate = (value) => {
   if (!value) {
@@ -50,32 +31,26 @@ const formatPaymentDate = (value) => {
   return dayjs(value).format('DD MMM YYYY');
 };
 
-const getRemainingSalary = (netAmount, payoutStatus) => {
-  const paidAmount = Array.isArray(payoutStatus?.payments)
-    ? payoutStatus.payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
-    : 0;
-  return Math.max((Number(netAmount) || 0) - paidAmount, 0);
-};
+const formatCycleRange = (start, end) => `${dayjs(start).format('DD MMM')} - ${dayjs(end).format('DD MMM')}`;
 
 const SalaryScreen = () => {
   const navigation = useNavigation();
-  const { employees, getSalaryBreakdown, getPayoutStatus, setPayoutStatus, clearPayoutStatus, refreshData } = useAttendance();
+  const {
+    employees,
+    getPayCyclesForEmployee,
+    setPayoutStatus,
+    clearPayoutStatus,
+    refreshData,
+  } = useAttendance();
   const currentMonth = useMemo(() => dayjs().startOf('month'), []);
   const [selectedMonth, setSelectedMonth] = useState(currentMonth.format('YYYY-MM-DD'));
   const [expandedId, setExpandedId] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedPayoutTypeByEmployee, setSelectedPayoutTypeByEmployee] = useState({});
+  const [selectedPayoutTypeByCycle, setSelectedPayoutTypeByCycle] = useState({});
   const [advanceInputs, setAdvanceInputs] = useState({});
   const [monthPickerConfig, setMonthPickerConfig] = useState(null);
 
   const selectedMonthDate = useMemo(() => dayjs(selectedMonth).startOf('month'), [selectedMonth]);
-  const monthRange = useMemo(
-    () => ({
-      start: selectedMonthDate.startOf('month'),
-      end: selectedMonthDate.endOf('month'),
-    }),
-    [selectedMonthDate]
-  );
   const headerMonthLabel = useMemo(() => selectedMonthDate.format('MMM YYYY'), [selectedMonthDate]);
   const heroMonthLabel = useMemo(() => selectedMonthDate.format('MMMM YYYY'), [selectedMonthDate]);
   const isViewingCurrentMonth = selectedMonthDate.isSame(currentMonth, 'month');
@@ -137,29 +112,28 @@ const SalaryScreen = () => {
     });
   }, [headerMonthLabel, isViewingCurrentMonth, navigation, selectedMonthDate]);
 
-  const totalSalary = useMemo(
-    () =>
-      employees.reduce((sum, employee) => {
-        const breakdown = getSalaryBreakdown(employee.id, monthRange.start, monthRange.end);
-        const payoutStatus = getPayoutStatus(employee.id, monthRange.start);
-        return sum + getRemainingSalary(breakdown?.net || 0, payoutStatus);
-      }, 0),
-    [employees, getPayoutStatus, getSalaryBreakdown, monthRange]
-  );
-
-  const totalMonthlySalary = useMemo(
-    () => employees.reduce((sum, employee) => sum + (Number(employee.monthlySalary) || 0), 0),
-    [employees]
-  );
-
   const rows = useMemo(
     () =>
-      employees.map((employee) => ({
-        employee,
-        breakdown: getSalaryBreakdown(employee.id, monthRange.start, monthRange.end),
-        payoutStatus: getPayoutStatus(employee.id, monthRange.start),
-      })),
-    [employees, getPayoutStatus, getSalaryBreakdown, monthRange]
+      employees
+        .flatMap((employee) => getPayCyclesForEmployee(employee.id, selectedMonthDate))
+        .sort((a, b) => {
+          const dueDiff = a.dueDate.valueOf() - b.dueDate.valueOf();
+          if (dueDiff !== 0) {
+            return dueDiff;
+          }
+          return a.employee.name.localeCompare(b.employee.name);
+        }),
+    [employees, getPayCyclesForEmployee, selectedMonthDate]
+  );
+
+  const totalRemaining = useMemo(
+    () => rows.reduce((sum, row) => sum + (row.remainingAmount || 0), 0),
+    [rows]
+  );
+
+  const totalScheduled = useMemo(
+    () => rows.reduce((sum, row) => sum + (row.breakdown?.baseCompensation || 0), 0),
+    [rows]
   );
 
   useEffect(() => {
@@ -167,15 +141,13 @@ const SalaryScreen = () => {
       const next = { ...prev };
       let changed = false;
 
-      rows.forEach(({ employee, payoutStatus }) => {
-        if (next[employee.id] !== undefined) {
-          return;
-        }
-        const latestAdvancePayment = Array.isArray(payoutStatus?.payments)
-          ? [...payoutStatus.payments].reverse().find((payment) => payment.status === 'advance_paid')
+      rows.forEach((row) => {
+        const rowId = `${row.employee.id}:${row.cycleKey}`;
+        const latestAdvancePayment = row.payoutSummary?.payments
+          ? [...row.payoutSummary.payments].reverse().find((payment) => payment.status === 'advance_paid')
           : null;
-        if (latestAdvancePayment) {
-          next[employee.id] = String(Number(latestAdvancePayment.amount) || '');
+        if (latestAdvancePayment && next[rowId] === undefined) {
+          next[rowId] = String(Number(latestAdvancePayment.amount) || '');
           changed = true;
         }
       });
@@ -184,75 +156,81 @@ const SalaryScreen = () => {
     });
   }, [rows]);
 
-  const handleRowPress = (employeeId) => {
-    setExpandedId((prev) => (prev === employeeId ? null : employeeId));
+  const handleRowPress = (rowId) => {
+    setExpandedId((prev) => (prev === rowId ? null : rowId));
   };
 
-  const handleMarkSalaryPaid = (employee, amount) => {
-    Alert.alert('Confirm payout', `Confirm ${employee.name}'s salary paid?`, [
+  const handleMarkSalaryPaid = (row, amount) => {
+    Alert.alert('Confirm payout', `Confirm ${row.employee.name}'s payout as paid?`, [
       { text: 'No', style: 'cancel' },
       {
         text: 'Yes',
         onPress: () => {
-          setPayoutStatus(employee.id, 'salary_paid', monthRange.start, amount);
+          setPayoutStatus(row.employee.id, 'salary_paid', row.cycleKey, amount, row.employee.paymentFrequency, row.dueDate);
         },
       },
     ]);
   };
 
-  const handleMarkAdvancePaid = (employee, amount) => {
-    Alert.alert('Confirm payout', `Confirm ${employee.name}'s advance salary paid: ${formatCurrencyNoPaise(amount)}?`, [
+  const handleMarkAdvancePaid = (row, amount) => {
+    Alert.alert('Confirm payout', `Confirm ${row.employee.name}'s advance paid: ${formatCurrencyNoPaise(amount)}?`, [
       { text: 'No', style: 'cancel' },
       {
         text: 'Yes',
         onPress: () => {
-          setPayoutStatus(employee.id, 'advance_paid', monthRange.start, amount);
+          setPayoutStatus(row.employee.id, 'advance_paid', row.cycleKey, amount, row.employee.paymentFrequency, row.dueDate);
         },
       },
     ]);
   };
 
-  const handleClearPayout = (employee) => {
-    Alert.alert('Delete payout status', `Remove saved payout info for ${employee.name}?`, [
+  const handleClearPayout = (row) => {
+    Alert.alert('Delete payout status', `Remove saved payout info for ${row.employee.name}?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
         onPress: () => {
-          clearPayoutStatus(employee.id, monthRange.start);
+          clearPayoutStatus(row.employee.id, row.cycleKey, row.employee.paymentFrequency, row.dueDate);
         },
       },
     ]);
   };
 
   const renderItem = ({ item }) => {
-    const isExpanded = expandedId === item.employee.id;
-    const breakdown = item.breakdown;
-    const payoutSummary = getPayoutSummary(item.payoutStatus);
-    const hasFullSalaryPayment = payoutSummary?.fullSalaryPaid;
-    const selectedPayoutType = selectedPayoutTypeByEmployee[item.employee.id] || 'none';
-    const advanceInput = advanceInputs[item.employee.id] ?? '';
+    const rowId = `${item.employee.id}:${item.cycleKey}`;
+    const isExpanded = expandedId === rowId;
+    const selectedPayoutType = selectedPayoutTypeByCycle[rowId] || 'none';
+    const advanceInput = advanceInputs[rowId] ?? '';
     const advanceAmount = Number(advanceInput);
     const isAdvanceAmountValid = Number.isFinite(advanceAmount) && advanceAmount > 0;
+    const breakdown = item.breakdown;
+    const salaryAmount = Math.max(breakdown?.net || 0, 0);
+    const payoutSummary = item.payoutSummary;
+    const hasFullPayment = item.status.key === 'paid';
     const bonusHours = breakdown?.extraHours > 0 ? breakdown.extraHours : 0;
     const lessHours = breakdown?.extraHours < 0 ? Math.abs(breakdown.extraHours) : 0;
-    const salaryAmount = Math.max(breakdown?.net || 0, 0);
-    const remainingSalaryAmount = getRemainingSalary(salaryAmount, item.payoutStatus);
 
     return (
       <SectionCard style={styles.rowCard}>
-        <Pressable onPress={() => handleRowPress(item.employee.id)}>
+        <Pressable onPress={() => handleRowPress(rowId)}>
           <View style={styles.rowHeader}>
-            <View>
+            <View style={styles.rowHeaderText}>
               <Text style={styles.rowName}>{item.employee.name}</Text>
-              {payoutSummary ? (
-                <Text style={styles.rowSubtext}>
-                  Paid: {formatCurrencyNoPaise(payoutSummary.totalPaid)} on {formatPaymentDate(payoutSummary.latestPaidAt)}
-                </Text>
-              ) : null}
+              <Text style={styles.rowSubtext}>
+                {getCycleCompensationLabel(item.employee.paymentFrequency)} due {item.dueDate.format('DD MMM YYYY')}
+              </Text>
+              <Text style={styles.rowMeta}>{formatCycleRange(item.start, item.end)}</Text>
             </View>
             <View style={styles.rowValueWrap}>
-              <Text style={styles.rowValue}>{formatCurrencyNoPaise(remainingSalaryAmount)}</Text>
+              <MetricPill
+                label={null}
+                value={`${item.status.icon} ${item.status.label}`}
+                tone={item.status.tone}
+                compact
+                style={styles.statusPill}
+              />
+              <Text style={styles.rowValue}>{formatCurrencyNoPaise(item.remainingAmount)}</Text>
             </View>
           </View>
         </Pressable>
@@ -260,80 +238,40 @@ const SalaryScreen = () => {
         {isExpanded ? (
           <View style={styles.breakdownWrap}>
             <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>Monthly salary</Text>
-              <Text style={styles.breakdownValue}>{formatCurrencyNoPaise(item.employee.monthlySalary)}</Text>
+              <Text style={styles.breakdownLabel}>{getCompensationLabel(item.employee.paymentFrequency)}</Text>
+              <Text style={styles.breakdownValue}>{formatCurrencyNoPaise(breakdown?.baseCompensation || 0)}</Text>
+            </View>
+            <View style={styles.breakdownRow}>
+              <Text style={styles.breakdownLabel}>Cycle period</Text>
+              <Text style={styles.breakdownValue}>{formatCycleRange(item.start, item.end)}</Text>
+            </View>
+            <View style={styles.breakdownRow}>
+              <Text style={styles.breakdownLabel}>Due date</Text>
+              <Text style={styles.breakdownValue}>{item.dueDate.format('DD MMM YYYY')}</Text>
             </View>
             <View style={styles.breakdownRow}>
               <Text style={styles.breakdownLabel}>Present days</Text>
-              <Text style={styles.breakdownValue}>
-                {breakdown?.presentDays || 0} / {breakdown?.workingDays || 0}
-              </Text>
+              <Text style={styles.breakdownValue}>{breakdown?.presentDays || 0}</Text>
             </View>
             <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>Deserved salary</Text>
-              <Text style={styles.breakdownValue}>{formatCurrencyNoPaise(breakdown?.earnedBase || 0)}</Text>
+              <Text style={styles.breakdownLabel}>Leave deduction</Text>
+              <View style={styles.breakdownValueGroup}>
+                <Text style={[styles.breakdownValue, styles.negativeValue]}>
+                  {formatCurrencyNoPaise(-(breakdown?.absentDeduction || 0))}
+                </Text>
+                <Text style={styles.breakdownDate}>{breakdown?.chargeableAbsentDays || 0} unpaid leave days</Text>
+              </View>
             </View>
             <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>Absent deduction</Text>
-              <Text style={[styles.breakdownValue, styles.negativeValue]}>
-                {formatCurrencyNoPaise(-(breakdown?.absentDeduction || 0))}
-              </Text>
-            </View>
-            <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>Bonus ( {formatHours(bonusHours)} )</Text>
+              <Text style={styles.breakdownLabel}>Bonus ({formatHours(bonusHours)})</Text>
               <Text style={[styles.breakdownValue, styles.positiveValue]}>{formatCurrencyNoPaise(breakdown?.bonus || 0)}</Text>
             </View>
             <View style={styles.breakdownRow}>
-              <Text style={styles.breakdownLabel}>Less ( {formatHours(lessHours)} )</Text>
+              <Text style={styles.breakdownLabel}>Less ({formatHours(lessHours)})</Text>
               <Text style={[styles.breakdownValue, styles.negativeValue]}>{formatCurrencyNoPaise(-(breakdown?.less || 0))}</Text>
             </View>
-            {payoutSummary?.fullSalaryPaid ? (
-              <View style={[styles.breakdownRow, styles.paymentSectionStart]}>
-                <Text style={styles.breakdownLabel}>Salary paid</Text>
-                <View style={styles.breakdownValueGroup}>
-                  <Text style={[styles.breakdownValue, styles.positiveValue]}>
-                    {formatCurrencyNoPaise(
-                      payoutSummary.payments
-                        .filter((payment) => payment.status === 'salary_paid')
-                        .reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
-                    )}
-                  </Text>
-                  <Text style={styles.breakdownDate}>
-                    {formatPaymentDate(
-                      [...payoutSummary.payments].reverse().find((payment) => payment.status === 'salary_paid')?.updatedAt
-                    )}
-                  </Text>
-                </View>
-              </View>
-            ) : null}
-            {!payoutSummary?.fullSalaryPaid && payoutSummary?.advancePaid ? (
-              <View style={[styles.breakdownRow, styles.paymentSectionStart]}>
-                <Text style={styles.breakdownLabel}>Advance paid</Text>
-                <View style={styles.breakdownValueGroup}>
-                  <Text style={[styles.breakdownValue, styles.advanceValue]}>{formatCurrencyNoPaise(payoutSummary.advancePaid)}</Text>
-                  <Text style={styles.breakdownDate}>
-                    {formatPaymentDate(
-                      [...payoutSummary.payments].reverse().find((payment) => payment.status === 'advance_paid')?.updatedAt
-                    )}
-                  </Text>
-                </View>
-              </View>
-            ) : null}
-            {payoutSummary?.fullSalaryPaid && payoutSummary?.advancePaid ? (
-              <View style={styles.breakdownRow}>
-                <Text style={styles.breakdownLabel}>Advance paid</Text>
-                <View style={styles.breakdownValueGroup}>
-                  <Text style={[styles.breakdownValue, styles.advanceValue]}>{formatCurrencyNoPaise(payoutSummary.advancePaid)}</Text>
-                  <Text style={styles.breakdownDate}>
-                    {formatPaymentDate(
-                      [...payoutSummary.payments].reverse().find((payment) => payment.status === 'advance_paid')?.updatedAt
-                    )}
-                  </Text>
-                </View>
-              </View>
-            ) : null}
             {payoutSummary ? (
-              <View style={styles.breakdownRow}>
+              <View style={[styles.breakdownRow, styles.paymentSectionStart]}>
                 <Text style={styles.breakdownLabel}>Total paid</Text>
                 <View style={styles.breakdownValueGroup}>
                   <Text style={[styles.breakdownValue, styles.advanceValue]}>{formatCurrencyNoPaise(payoutSummary.totalPaid)}</Text>
@@ -341,9 +279,15 @@ const SalaryScreen = () => {
                 </View>
               </View>
             ) : null}
+            {payoutSummary?.advancePaid ? (
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownLabel}>Advance paid</Text>
+                <Text style={[styles.breakdownValue, styles.advanceValue]}>{formatCurrencyNoPaise(payoutSummary.advancePaid)}</Text>
+              </View>
+            ) : null}
             <View style={[styles.breakdownRow, styles.breakdownTotal]}>
               <Text style={styles.totalLabel}>Remaining net</Text>
-              <Text style={styles.totalValue}>{formatCurrencyNoPaise(remainingSalaryAmount)}</Text>
+              <Text style={styles.totalValue}>{formatCurrencyNoPaise(item.remainingAmount)}</Text>
             </View>
 
             <View style={styles.actionsWrap}>
@@ -351,24 +295,23 @@ const SalaryScreen = () => {
               <View style={styles.topLevelActionRow}>
                 <Pressable
                   onPress={() =>
-                    setSelectedPayoutTypeByEmployee((prev) => ({
+                    setSelectedPayoutTypeByCycle((prev) => ({
                       ...prev,
-                      [item.employee.id]:
-                        selectedPayoutType === 'salary_paid' ? 'none' : 'salary_paid',
+                      [rowId]: selectedPayoutType === 'salary_paid' ? 'none' : 'salary_paid',
                     }))
                   }
                   style={[
                     styles.dropdownButton,
                     selectedPayoutType === 'salary_paid' && styles.dropdownButtonActive,
-                    hasFullSalaryPayment && styles.dropdownButtonDisabled,
+                    hasFullPayment && styles.dropdownButtonDisabled,
                   ]}
-                  disabled={hasFullSalaryPayment}
+                  disabled={hasFullPayment}
                 >
                   <Text
                     style={[
                       styles.dropdownButtonText,
                       selectedPayoutType === 'salary_paid' && styles.dropdownButtonTextActive,
-                      hasFullSalaryPayment && styles.dropdownButtonTextDisabled,
+                      hasFullPayment && styles.dropdownButtonTextDisabled,
                     ]}
                   >
                     Salary paid
@@ -376,10 +319,9 @@ const SalaryScreen = () => {
                 </Pressable>
                 <Pressable
                   onPress={() =>
-                    setSelectedPayoutTypeByEmployee((prev) => ({
+                    setSelectedPayoutTypeByCycle((prev) => ({
                       ...prev,
-                      [item.employee.id]:
-                        selectedPayoutType === 'advance_paid' ? 'none' : 'advance_paid',
+                      [rowId]: selectedPayoutType === 'advance_paid' ? 'none' : 'advance_paid',
                     }))
                   }
                   style={[styles.dropdownButton, selectedPayoutType === 'advance_paid' && styles.dropdownButtonActive]}
@@ -392,10 +334,10 @@ const SalaryScreen = () => {
 
               {selectedPayoutType === 'salary_paid' ? (
                 <PrimaryButton
-                  label={`Mark Salary Paid (${formatCurrencyNoPaise(salaryAmount)})`}
-                  onPress={() => handleMarkSalaryPaid(item.employee, salaryAmount)}
+                  label={`Mark Paid (${formatCurrencyNoPaise(salaryAmount)})`}
+                  onPress={() => handleMarkSalaryPaid(item, salaryAmount)}
                   style={styles.actionButton}
-                  disabled={hasFullSalaryPayment || salaryAmount <= 0}
+                  disabled={hasFullPayment || salaryAmount <= 0}
                 />
               ) : null}
 
@@ -404,7 +346,7 @@ const SalaryScreen = () => {
                   <Text style={styles.advanceLabel}>Advance amount</Text>
                   <TextInput
                     value={advanceInput}
-                    onChangeText={(value) => setAdvanceInputs((prev) => ({ ...prev, [item.employee.id]: value }))}
+                    onChangeText={(value) => setAdvanceInputs((prev) => ({ ...prev, [rowId]: value }))}
                     placeholder="Enter advance amount"
                     placeholderTextColor={colors.textSoft}
                     keyboardType="numeric"
@@ -412,7 +354,7 @@ const SalaryScreen = () => {
                   />
                   <PrimaryButton
                     label="Mark Advance Paid"
-                    onPress={() => handleMarkAdvancePaid(item.employee, advanceAmount)}
+                    onPress={() => handleMarkAdvancePaid(item, advanceAmount)}
                     disabled={!isAdvanceAmountValid}
                     style={styles.actionButton}
                   />
@@ -420,7 +362,7 @@ const SalaryScreen = () => {
               ) : null}
 
               {payoutSummary ? (
-                <Pressable onPress={() => handleClearPayout(item.employee)} style={styles.clearButton}>
+                <Pressable onPress={() => handleClearPayout(item)} style={styles.clearButton}>
                   <Text style={styles.clearButtonText}>Delete saved payout status</Text>
                 </Pressable>
               ) : null}
@@ -444,17 +386,17 @@ const SalaryScreen = () => {
     <Screen>
       <View style={styles.container}>
         <SectionCard tinted style={styles.heroCard}>
-          <Text style={styles.heroLabel}>Total payout</Text>
-          <Text style={styles.heroValue}>{formatCurrencyNoPaise(totalSalary)}</Text>
+          <Text style={styles.heroLabel}>Total remaining payout</Text>
+          <Text style={styles.heroValue}>{formatCurrencyNoPaise(totalRemaining)}</Text>
           <Text style={styles.heroSubtext}>
-            {heroMonthLabel} monthly salary total: {formatCurrencyNoPaise(totalMonthlySalary)}
+            {heroMonthLabel} scheduled payout: {formatCurrencyNoPaise(totalScheduled)}
           </Text>
         </SectionCard>
 
         <FlatList
           data={rows}
           renderItem={renderItem}
-          keyExtractor={(item) => item.employee.id}
+          keyExtractor={(item) => `${item.employee.id}:${item.cycleKey}`}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
           ListEmptyComponent={<EmptyState title="No salary data yet" subtitle="Add employees to unlock payout view." />}
           contentContainerStyle={styles.listContent}
@@ -606,7 +548,11 @@ const styles = StyleSheet.create({
   rowHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+  },
+  rowHeaderText: {
+    flex: 1,
+    paddingRight: 12,
   },
   rowName: {
     fontSize: 18,
@@ -618,9 +564,18 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 13,
   },
+  rowMeta: {
+    marginTop: 4,
+    color: colors.textSoft,
+    fontSize: 12,
+    fontWeight: '600',
+  },
   rowValueWrap: {
-    marginLeft: 12,
     alignItems: 'flex-end',
+    gap: 10,
+  },
+  statusPill: {
+    marginRight: 0,
   },
   rowValue: {
     fontSize: 18,
@@ -639,14 +594,17 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 7,
+    gap: 12,
   },
   breakdownLabel: {
     color: colors.textMuted,
     fontWeight: '600',
+    flex: 1,
   },
   breakdownValue: {
     color: colors.text,
     fontWeight: '700',
+    textAlign: 'right',
   },
   breakdownValueGroup: {
     alignItems: 'flex-end',

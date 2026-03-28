@@ -2,8 +2,6 @@ import dayjs from 'dayjs';
 
 export const formatDate = (value = dayjs()) => dayjs(value).format('YYYY-MM-DD');
 
-export const getDayName = (value) => dayjs(value).format('dddd');
-
 const getOrdinal = (day) => {
   const remainder = day % 10;
   const remainderHundred = day % 100;
@@ -43,28 +41,37 @@ export const getCurrentMonthRange = () => {
   };
 };
 
-export const isWorkingDay = (employee, date) => {
-  if (!employee) {
-    return true;
+export const getMonthlyHolidays = (employee) => {
+  const explicitMonthlyHolidays = Number(employee?.monthlyHolidays);
+  if (Number.isFinite(explicitMonthlyHolidays)) {
+    return Math.min(30, Math.max(0, Math.floor(explicitMonthlyHolidays)));
   }
-  if (employee.workingDaysPerWeek >= 7) {
-    return true;
-  }
-  const configuredNonWorkingDays = Array.isArray(employee.nonWorkingDays)
-    ? employee.nonWorkingDays
-    : employee.nonWorkingDay
-    ? [employee.nonWorkingDay]
-    : [];
-  if (configuredNonWorkingDays.length === 0) {
-    return true;
-  }
-  return !configuredNonWorkingDays.includes(getDayName(date));
+
+  const weeklyDaysOff = Number.isFinite(Number(employee?.workingDaysPerWeek))
+    ? Math.max(0, 7 - Math.min(7, Math.floor(Number(employee.workingDaysPerWeek))))
+    : Array.isArray(employee?.nonWorkingDays)
+      ? employee.nonWorkingDays.length
+      : employee?.nonWorkingDay
+        ? 1
+        : 0;
+
+  return Math.min(30, Math.max(0, weeklyDaysOff * 4));
 };
 
 export const countWorkingDays = (employee, startDate, endDate) => {
+  const start = dayjs(startDate).startOf('day');
+  const end = dayjs(endDate).startOf('day');
+  const totalDays = end.diff(start, 'day') + 1;
+  return Math.max(totalDays - getMonthlyHolidays(employee), 0);
+};
+
+export const getPayrollBaseDays = (employee) => Math.max(30 - getMonthlyHolidays(employee), 0);
+
+export const countPresentDays = (records = {}, employeeId, startDate, endDate) => {
   let count = 0;
   iterateDateRange(startDate, endDate, (cursor) => {
-    if (isWorkingDay(employee, cursor)) {
+    const dateKey = formatDate(cursor);
+    if (records?.[dateKey]?.[employeeId]?.present) {
       count += 1;
     }
   });

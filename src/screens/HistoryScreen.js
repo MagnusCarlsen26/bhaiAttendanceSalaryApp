@@ -3,8 +3,9 @@ import { Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } 
 import dayjs from 'dayjs';
 import { useNavigation } from '@react-navigation/native';
 import { useAttendance } from '../context/AttendanceContext';
-import { formatDate, isWorkingDay } from '../utils/dateUtils';
+import { formatDate } from '../utils/dateUtils';
 import { formatHours } from '../utils/formatters';
+import { getCycleCompensationLabel } from '../utils/payroll';
 import Screen from '../components/ui/Screen';
 import SectionCard from '../components/ui/SectionCard';
 import EmptyState from '../components/ui/EmptyState';
@@ -30,19 +31,6 @@ const buildMonthCells = (employee, monthStart, monthEnd, getRecord) => {
       currentWeek.push({
         key: `filler-${dateKey}`,
         kind: 'filler',
-      });
-      if (currentWeek.length === 7) {
-        weeks.push(currentWeek);
-        currentWeek = [];
-      }
-      cursor = cursor.add(1, 'day');
-      continue;
-    }
-
-    if (!isWorkingDay(employee, cursor)) {
-      currentWeek.push({
-        key: dateKey,
-        kind: 'nonWorking',
       });
       if (currentWeek.length === 7) {
         weeks.push(currentWeek);
@@ -92,13 +80,13 @@ const buildMonthCells = (employee, monthStart, monthEnd, getRecord) => {
   }
 
   return weeks
-    .filter((week) => week.some((cell) => cell.kind !== 'filler' && cell.kind !== 'nonWorking'))
+    .filter((week) => week.some((cell) => cell.kind !== 'filler'))
     .flat();
 };
 
 const HistoryScreen = () => {
   const navigation = useNavigation();
-  const { employees, getSummaryForEmployee, getRecord, refreshData } = useAttendance();
+  const { employees, getSummaryForEmployee, getRecord, refreshData, getEmployeePaymentStatusForMonth } = useAttendance();
   const [refreshing, setRefreshing] = useState(false);
   const [expandedEmployees, setExpandedEmployees] = useState({});
   const [monthPickerConfig, setMonthPickerConfig] = useState(null);
@@ -180,10 +168,11 @@ const HistoryScreen = () => {
             summary,
             attendanceRate,
             cells: buildMonthCells(employee, monthStart, monthEnd, getRecord),
+            paymentStatus: getEmployeePaymentStatusForMonth(employee.id, selectedMonthDate),
           };
         })
         .sort((a, b) => a.employee.name.localeCompare(b.employee.name)),
-    [employees, getRecord, getSummaryForEmployee, monthEnd, monthStart]
+    [employees, getEmployeePaymentStatusForMonth, getRecord, getSummaryForEmployee, monthEnd, monthStart, selectedMonthDate]
   );
 
   const handleRefresh = async () => {
@@ -213,14 +202,28 @@ const HistoryScreen = () => {
           <EmptyState title="No history found" subtitle="Add employees to unlock the monthly history view." />
         ) : null}
 
-        {employeeCards.map(({ employee, summary, attendanceRate, cells }) => (
+        {employeeCards.map(({ employee, summary, attendanceRate, cells, paymentStatus }) => (
           <SectionCard key={employee.id} dense themed style={styles.employeeCard}>
             <Pressable onPress={() => toggleExpandedEmployee(employee.id)} style={({ pressed }) => [styles.employeeHeader, pressed && styles.pressed]}>
               <View style={styles.employeeHeaderText}>
-                <View style={styles.employeeNameContainer}>
-                  <Text numberOfLines={1} style={styles.employeeName}>
-                    {employee.name}
-                  </Text>
+                <View style={styles.employeeMainMeta}>
+                  <View style={styles.employeeNameContainer}>
+                    <Text numberOfLines={1} style={styles.employeeName}>
+                      {employee.name}
+                    </Text>
+                  </View>
+                  <View style={styles.employeePaymentRow}>
+                    <Text numberOfLines={1} style={styles.employeePaymentMeta}>
+                      {getCycleCompensationLabel(employee.paymentFrequency)}
+                    </Text>
+                    <MetricPill
+                      label={null}
+                      value={`${paymentStatus.icon} ${paymentStatus.label}`}
+                      tone={paymentStatus.tone}
+                      compact
+                      style={styles.paymentStatusPill}
+                    />
+                  </View>
                 </View>
                 <View style={styles.employeeMetaCenter}>
                   <Text numberOfLines={1} style={styles.employeeMetaInline}>
@@ -445,9 +448,27 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  employeeMainMeta: {
+    flex: 1.5,
+    marginRight: 8,
+  },
   employeeNameContainer: {
     flex: 1,
-    marginRight: 8,
+  },
+  employeePaymentRow: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  employeePaymentMeta: {
+    fontSize: 12,
+    color: colors.textMuted,
+    fontWeight: '700',
+  },
+  paymentStatusPill: {
+    marginRight: 0,
   },
   employeeMetaCenter: {
     flex: 1,

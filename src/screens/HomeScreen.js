@@ -16,7 +16,7 @@ import dayjs from 'dayjs';
 import { useNavigation } from '@react-navigation/native';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { useAttendance } from '../context/AttendanceContext';
-import { formatDate, isWorkingDay } from '../utils/dateUtils';
+import { formatDate } from '../utils/dateUtils';
 import Screen from '../components/ui/Screen';
 import SectionCard from '../components/ui/SectionCard';
 import PrimaryButton from '../components/ui/PrimaryButton';
@@ -159,10 +159,7 @@ const HomeScreen = () => {
     setDatePickerConfig((prev) => (prev ? { ...prev, value: resolvedValue } : prev));
   };
 
-  const visibleEmployees = useMemo(
-    () => employees.filter((employee) => isWorkingDay(employee, selectedDate)),
-    [employees, selectedDate]
-  );
+  const visibleEmployees = useMemo(() => employees, [employees]);
 
   const stats = useMemo(() => {
     let present = 0;
@@ -247,6 +244,19 @@ const HomeScreen = () => {
     );
   };
 
+  const handleEmployeeLongPress = (employee) => {
+    Alert.alert(employee.name, 'Choose an action', [
+      {
+        text: 'Edit',
+        onPress: () => navigation.navigate('AddEmployee', { employee }),
+      },
+      {
+        text: 'Cancel',
+        style: 'cancel',
+      },
+    ]);
+  };
+
   const renderEmployee = ({ item }) => {
     const record = getRecord(selectedDate, item.id);
     const tone = getTone(record);
@@ -262,7 +272,7 @@ const HomeScreen = () => {
         <View style={styles.employeeRow}>
           <View style={styles.employeeMeta}>
             <View style={styles.employeeTextWrap}>
-              <Pressable onPress={() => navigation.navigate('AddEmployee', { employee: item })} hitSlop={6}>
+              <Pressable onLongPress={() => handleEmployeeLongPress(item)} delayLongPress={250} hitSlop={6}>
                 <Text numberOfLines={1} style={[styles.employeeName, tone === 'absent' && styles.employeeNameAbsent]}>
                   {item.name}
                 </Text>
@@ -386,8 +396,8 @@ const HomeScreen = () => {
         }
         ListEmptyComponent={
           <EmptyState
-            title="No one is scheduled"
-            subtitle={`No employees are scheduled for ${selectedDateLabel}.`}
+            title="No employees yet"
+            subtitle={`Add an employee to start marking attendance for ${selectedDateLabel}.`}
           />
         }
         ListFooterComponent={<View style={styles.footerSpace} />}
